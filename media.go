@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -31,7 +30,7 @@ func (mp *MediaPlayer) startMediaOnMonitor(media MediaFile, monitor Monitor, mon
         // Build proper geometry string for this monitor
         geometry := fmt.Sprintf("%dx%d+%d+%d", monitor.Width, monitor.Height, monitor.X, monitor.Y)
         
-        log.Printf("Starting video on monitor %d with geometry: %s", monitorIdx, geometry)
+        Info("Starting video on monitor %d with geometry: %s", monitorIdx, geometry)
         
         cmd = exec.Command(playerCmd,
             "--no-input-default-bindings", // Disable default key bindings
@@ -66,7 +65,7 @@ func (mp *MediaPlayer) startMediaOnMonitor(media MediaFile, monitor Monitor, mon
         // Build proper geometry string for this monitor
         geometry := fmt.Sprintf("%dx%d+%d+%d", monitor.Width, monitor.Height, monitor.X, monitor.Y)
         
-        log.Printf("Starting image on monitor %d with geometry: %s", monitorIdx, geometry)
+        Info("Starting image on monitor %d with geometry: %s", monitorIdx, geometry)
         
         cmd = exec.Command(playerCmd,
             "--no-input-default-bindings", // Disable default key bindings
@@ -107,7 +106,7 @@ func (mp *MediaPlayer) startMediaOnMonitor(media MediaFile, monitor Monitor, mon
 
     // Add to our list of running processes
     mp.currentProcs = append(mp.currentProcs, cmd)
-    log.Printf("Started playback on monitor %d: %s", monitorIdx, media.Path)
+    Info("Started playback on monitor %d: %s", monitorIdx, media.Path)
 
     return nil
 }
@@ -135,7 +134,7 @@ func (mp *MediaPlayer) killAllMedia() {
 		if proc != nil && proc.Process != nil {
 			// Kill the process
 			proc.Process.Kill()
-			log.Printf("Killed media player process %d", i)
+			Info("Killed media player process %d", i)
 		}
 	}
 
@@ -152,7 +151,7 @@ func (mp *MediaPlayer) SetMonitors(monitors []Monitor) {
 	defer mp.mutex.Unlock()
 
 	mp.monitors = monitors
-	log.Printf("Media player configured with %d monitors", len(monitors))
+	Info("Media player configured with %d monitors", len(monitors))
 
 	// If no monitors specified, add a default one
 	if len(mp.monitors) == 0 {
@@ -208,7 +207,7 @@ func (mp *MediaPlayer) Stop() {
 	for i, proc := range mp.currentProcs {
 		if proc != nil && proc.Process != nil {
 			proc.Process.Kill()
-			log.Printf("Killed media player process %d on stop", i)
+			Info("Killed media player process %d on stop", i)
 		}
 	}
 
@@ -220,8 +219,8 @@ func (mp *MediaPlayer) Stop() {
 func (mp *MediaPlayer) scanMediaFiles() error {
 	mp.mediaFiles = []MediaFile{} // Clear existing files
 
-	log.Printf("Scanning for media files in: %s", mp.config.MediaDir)
-	log.Printf("Supported extensions: %v", mp.config.SupportedExt)
+	Info("Scanning for media files in: %s", mp.config.MediaDir)
+	Info("Supported extensions: %v", mp.config.SupportedExt)
 
 	err := filepath.Walk(mp.config.MediaDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -251,7 +250,7 @@ func (mp *MediaPlayer) scanMediaFiles() error {
 					Path: path,
 					Type: mediaType,
 				})
-				log.Printf("Found media file: %s (type: %v)", path, mediaType)
+				//Info("Found media file: %s (type: %v)", path, mediaType)
 				break
 			}
 		}
@@ -263,7 +262,7 @@ func (mp *MediaPlayer) scanMediaFiles() error {
 		return fmt.Errorf("error scanning media directory: %v", err)
 	}
 
-	log.Printf("Found %d media files in %s", len(mp.mediaFiles), mp.config.MediaDir)
+	Info("Found %d media files in %s", len(mp.mediaFiles), mp.config.MediaDir)
 	return nil
 }
 
@@ -330,9 +329,9 @@ func (mp *MediaPlayer) playbackLoop() {
 			}
 
 			// Play the media file on this monitor
-			log.Printf("Starting playback on monitor %d: %s", monitorIdx, mediaFile.Path)
+			Info("Starting playback on monitor %d: %s", monitorIdx, mediaFile.Path)
 			if err := mp.startMediaOnMonitor(mediaFile, monitor, monitorIdx); err != nil {
-				log.Printf("Failed to play media on monitor %d: %v", monitorIdx, err)
+				Error("Failed to play media on monitor %d: %v", monitorIdx, err)
 			}
 		}
 
@@ -378,9 +377,9 @@ func (mp *MediaPlayer) playMediaAndWait(media MediaFile) error {
 		select {
 		case err := <-waitChan:
 			if err != nil && !strings.Contains(err.Error(), "killed") {
-				log.Printf("Media player exited with error: %v", err)
+				Info("Media player exited with error: %v", err)
 			} else {
-				log.Printf("Media playback of %s completed", media.Path)
+				Info("Media playback of %s completed", media.Path)
 			}
 		case <-mp.stopChan:
 			mp.killCurrentMedia()
@@ -468,7 +467,7 @@ func (mp *MediaPlayer) startMedia(media MediaFile) error {
     }
 
     mp.currentProc = cmd
-    log.Printf("Started playback of: %s with args: %v", media.Path, cmd.Args)
+    Info("Started playback of: %s with args: %v", media.Path, cmd.Args)
 
     return nil
 }

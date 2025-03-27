@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"strconv"
@@ -212,7 +211,7 @@ func (l *X11Locker) Lock() error {
     // Detect monitors and set up environment for the media player
     monitors, err := l.detectMonitors()
     if err != nil {
-        log.Printf("Warning: failed to detect monitors: %v", err)
+        Info("Warning: failed to detect monitors: %v", err)
         monitors = []Monitor{{
             X:      0,
             Y:      0,
@@ -221,7 +220,7 @@ func (l *X11Locker) Lock() error {
         }}
     }
     
-    log.Printf("Detected %d monitors", len(monitors))
+    Info("Detected %d monitors", len(monitors))
     
     // Pass monitor information to media player
     l.mediaPlayer.SetMonitors(monitors)
@@ -230,13 +229,13 @@ func (l *X11Locker) Lock() error {
     // Note: This is less important with InputOnly window but keeping for compatibility
     windowIDStr := fmt.Sprintf("%d", l.window)
     os.Setenv("FANCYLOCK_WINDOW_ID", windowIDStr)
-    log.Printf("Setting window ID for media player: %s", windowIDStr)
+    Info("Setting window ID for media player: %s", windowIDStr)
     
     // Start playing media in background before showing lock screen
     if err := l.mediaPlayer.Start(); err != nil {
-        log.Printf("Warning: failed to start media player: %v", err)
+        Info("Warning: failed to start media player: %v", err)
     } else {
-        log.Printf("Media player started successfully")
+        Info("Media player started successfully")
     }
     
     // Give media player time to start fully before showing lock screen
@@ -259,7 +258,7 @@ func (l *X11Locker) Lock() error {
     
     // Hide the cursor
     if err := l.hideCursor(); err != nil {
-        log.Printf("Warning: failed to hide cursor: %v", err)
+        Info("Warning: failed to hide cursor: %v", err)
     }
     
     // Grab keyboard to prevent keyboard shortcuts from working
@@ -315,7 +314,7 @@ func (l *X11Locker) Lock() error {
             // Check for any pending events
             ev, err := l.conn.PollForEvent()
             if err != nil {
-                log.Printf("Error polling for event: %v", err)
+                Error("polling for event: %v", err)
                 continue
             }
             
@@ -335,9 +334,9 @@ func (l *X11Locker) Lock() error {
         if err != nil {
             if strings.Contains(err.Error(), "BadRequest") {
                 // This is likely a harmless error related to X11 extensions
-                log.Printf("Ignoring X11 BadRequest error (this is usually harmless)")
+                Info("Ignoring X11 BadRequest error (this is usually harmless)")
             } else {
-                log.Printf("Error waiting for event: %v", err)
+                Error("waiting for event: %v", err)
             }
             // Continue the loop even after an error
             continue
@@ -360,7 +359,7 @@ func (l *X11Locker) Lock() error {
             
         case xproto.MappingNotifyEvent:
             // Handle keyboard mapping changes
-            log.Printf("Keyboard mapping changed")
+            Info("Keyboard mapping changed")
         }
     }
     
@@ -438,7 +437,7 @@ func (l *X11Locker) handleKeyPress(e xproto.KeyPressEvent) {
 		keySyms := xproto.GetKeyboardMapping(l.conn, e.Detail, 1)
 		reply, err := keySyms.Reply()
 		if err != nil {
-			log.Printf("Error getting keyboard mapping: %v", err)
+			Error("getting keyboard mapping: %v", err)
 			return
 		}
 		
@@ -447,7 +446,7 @@ func (l *X11Locker) handleKeyPress(e xproto.KeyPressEvent) {
 			keySym := reply.Keysyms[0]
 			// ESC key or Q key (lowercase or uppercase)
 			if l.config.DebugExit && (keySym == 0xff1b || keySym == 0x71 || keySym == 0x51) {
-				log.Printf("Debug exit triggered during lockout")
+				Info("Debug exit triggered during lockout")
 				l.isLocked = false
 				return
 			}
@@ -467,7 +466,7 @@ func (l *X11Locker) handleKeyPress(e xproto.KeyPressEvent) {
 	keySyms := xproto.GetKeyboardMapping(l.conn, e.Detail, 1)
 	reply, err := keySyms.Reply()
 	if err != nil {
-		log.Printf("Error getting keyboard mapping: %v", err)
+		Error("getting keyboard mapping: %v", err)
 		return
 	}
 	
@@ -477,7 +476,7 @@ func (l *X11Locker) handleKeyPress(e xproto.KeyPressEvent) {
 		
 		// Check for debug exit key first
 		if l.config.DebugExit && (keySym == 0xff1b || keySym == 0x71 || keySym == 0x51) { // ESC or Q/q
-			log.Printf("Debug exit triggered")
+			Info("Debug exit triggered")
 			l.isLocked = false
 			return
 		}
@@ -523,7 +522,7 @@ func (l *X11Locker) authenticate() {
     if l.lockoutActive && time.Now().Before(l.lockoutUntil) {
         // Still in lockout period, don't even attempt authentication
         remainingTime := l.lockoutUntil.Sub(time.Now()).Round(time.Second)
-        log.Printf("Authentication locked out for another %v", remainingTime)
+        Info("Authentication locked out for another %v", remainingTime)
         l.passwordBuf = ""
         
         // Keep the dots for shake animation
@@ -536,30 +535,30 @@ func (l *X11Locker) authenticate() {
     
     // If we were in a lockout but it's expired, clear the lockout state
     if l.lockoutActive && time.Now().After(l.lockoutUntil) {
-        log.Printf("Lockout period has expired, clearing lockout state")
+        Info("Lockout period has expired, clearing lockout state")
         l.lockoutActive = false
     }
     
     // Add debug log for password attempt (don't log actual password)
-    log.Printf("Attempting authentication with password of length: %d", len(l.passwordBuf))
+    Info("Attempting authentication with password of length: %d", len(l.passwordBuf))
     
     // Try to authenticate using PAM
     result := l.helper.authenticator.Authenticate(l.passwordBuf)
     
     // Detailed logging of authentication result
-    log.Printf("Authentication result: success=%v, message=%s", result.Success, result.Message)
+    Info("Authentication result: success=%v, message=%s", result.Success, result.Message)
     
     if result.Success {
         // Authentication successful, unlock and reset counters
         l.isLocked = false
         l.failedAttempts = 0
         l.lockoutActive = false
-        log.Printf("Authentication successful, unlocking screen")
+        Info("Authentication successful, unlocking screen")
     } else {
         // Authentication failed, increment counter
         l.failedAttempts++
         l.lastFailureTime = time.Now()
-        log.Printf("Authentication failed (%d/3 attempts): %s", l.failedAttempts, result.Message)
+        Info("Authentication failed (%d/3 attempts): %s", l.failedAttempts, result.Message)
         
         // Clear password
         l.passwordBuf = ""
@@ -573,11 +572,11 @@ func (l *X11Locker) authenticate() {
             if time.Since(l.lastFailureTime) < 5*time.Minute {
                 // Repeated quick failures, implement the longer 5-minute lockout
                 lockoutDuration = 5 * time.Minute
-                log.Printf("Multiple rapid failures detected, locking out for 5 minutes")
+                Info("Multiple rapid failures detected, locking out for 5 minutes")
             } else {
                 // Standard lockout of 1 minute
                 lockoutDuration = 1 * time.Minute
-                log.Printf("Failed 3 attempts, locking out for 1 minute")
+                Info("Failed 3 attempts, locking out for 1 minute")
             }
             
             // Set the lockout time
@@ -586,7 +585,7 @@ func (l *X11Locker) authenticate() {
             l.failedAttempts = 0 // Reset counter after implementing lockout
             
             // Make sure the lockout message is displayed
-            log.Printf("Lockout activated until: %v", l.lockoutUntil)
+            Info("Lockout activated until: %v", l.lockoutUntil)
             l.drawLockoutMessage()
         }
         
@@ -663,7 +662,7 @@ func (l *X11Locker) drawLockoutMessage() {
     if l.messageWindow == 0 {
         wid, err := xproto.NewWindowId(l.conn)
         if err != nil {
-            log.Printf("Failed to create message window ID: %v", err)
+            Error("Failed to create message window ID: %v", err)
             return
         }
         l.messageWindow = wid
@@ -693,7 +692,7 @@ func (l *X11Locker) drawLockoutMessage() {
         ).Check()
         
         if err != nil {
-            log.Printf("Failed to create message window: %v", err)
+            Error("Failed to create message window: %v", err)
             l.messageWindow = 0
             return
         }
@@ -833,7 +832,7 @@ func (l *X11Locker) updateLockoutTimerDisplay() {
     l.conn.Sync()
     
     // Log for debugging
-    log.Printf("Updated lockout timer: %s", timeString)
+    Info("Updated lockout timer: %s", timeString)
 }
 
 // drawPasswordUI draws the password entry UI
@@ -867,7 +866,7 @@ func (l *X11Locker) drawPasswordDots() {
             // Create a new window ID for this dot
             dotWid, err := xproto.NewWindowId(l.conn)
             if err != nil {
-                log.Printf("Failed to create dot window: %v", err)
+                Error("Failed to create dot window: %v", err)
                 continue
             }
             
@@ -901,7 +900,7 @@ func (l *X11Locker) drawPasswordDots() {
             ).Check()
             
             if err != nil {
-                log.Printf("Failed to create dot window: %v", err)
+                Error("Failed to create dot window: %v", err)
                 continue
             }
             
@@ -1008,7 +1007,7 @@ func (l *X11Locker) StartIdleMonitor() error {
 	// Start watching in a goroutine
 	go l.idleWatcher.Watch()
 	
-	log.Printf("Idle monitor started (timeout: %d seconds)", l.config.IdleTimeout)
+	Info("Idle monitor started (timeout: %d seconds)", l.config.IdleTimeout)
 	return nil
 }
 
@@ -1035,7 +1034,7 @@ func (w *IdleWatcher) Watch() {
 			// Query the idle time
 			info, err := screensaver.QueryInfo(w.conn, xproto.Drawable(xproto.Setup(w.conn).DefaultScreen(w.conn).Root)).Reply()
 			if err != nil {
-				log.Printf("Error querying idle time: %v", err)
+				Error("querying idle time: %v", err)
 				continue
 			}
 			
@@ -1044,7 +1043,7 @@ func (w *IdleWatcher) Watch() {
 			
 			// Check if we've reached the timeout
 			if idleSeconds >= w.timeout {
-				log.Printf("Idle timeout reached (%v), locking screen", idleSeconds)
+				Info("Idle timeout reached (%v), locking screen", idleSeconds)
 				
 				// Stop the watcher
 				close(w.stopChan)

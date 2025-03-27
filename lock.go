@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"os/user"
@@ -46,11 +45,11 @@ func (a *PamAuthenticator) Authenticate(password string) AuthResult {
 			return "", nil
 		case pam.ErrorMsg:
 			// Log error messages but keep going
-			log.Printf("PAM error: %s", msg)
+			Info("PAM error: %s", msg)
 			return "", nil
 		case pam.TextInfo:
 			// Log informational messages but keep going
-			log.Printf("PAM info: %s", msg)
+			Info("PAM info: %s", msg)
 			return "", nil
 		default:
 			return "", errors.New("unexpected conversation style")
