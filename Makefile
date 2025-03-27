@@ -36,10 +36,12 @@ native: check-go | $(BIN)
 
 package: | $(DIST)
 	@for arch in $(ARCHES); do \
-		tar -czvf $(DIST)/$(APP)-linux-$$arch.tar.gz -C $(BIN) $(APP)-linux-$$arch ; \
+		if [ -f $(BIN)/$(APP)-linux-$$arch ]; then \
+			tar -czvf $(DIST)/$(APP)-linux-$$arch.tar.gz -C $(BIN) $(APP)-linux-$$arch; \
+		fi \
 	done
 	@if [ -f $(BIN)/$(APP)-native ]; then \
-		tar -czvf $(DIST)/$(APP)-native.tar.gz -C $(BIN) $(APP)-native ; \
+		tar -czvf $(DIST)/$(APP)-native.tar.gz -C $(BIN) $(APP)-native; \
 	fi
 
 install: native
