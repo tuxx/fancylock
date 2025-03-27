@@ -6,11 +6,13 @@ on:
       - 'v*'
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     env:
       GOOS: linux
       GOARCH: amd64
+    outputs:
+      build_success: ${{ steps.build_step.outputs.build_success }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -20,13 +22,48 @@ jobs:
         with:
           go-version: '1.24.0'  # adjust as needed
 
-      - name: Build binary
+      - name: Install dependencies and build binary
+        id: build_step
         run: |
+          # Install PAM development libraries
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev
+          
           # Build the project and produce the binary "fancylock"
           go build -ldflags="-s -w" -o fancylock .
+          
+          # If we get here, build succeeded
+          echo "build_success=true" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Check if build succeeded
+        if: steps.build_step.outputs.build_success != 'true'
+        run: exit 1
 
       - name: Archive binary
+        if: steps.build_step.outputs.build_success == 'true'
         run: tar -czvf fancylock-linux.tar.gz fancylock
+        
+      - name: Upload artifact for release job
+        if: steps.build_step.outputs.build_success == 'true'
+        uses: actions/upload-artifact@v3
+        with:
+          name: fancylock-artifact
+          path: fancylock-linux.tar.gz
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: needs.build.outputs.build_success == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Download build artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: fancylock-artifact
 
       - name: Get commit message for release notes
         id: get_release_notes
@@ -42,12 +79,6 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           body: ${{ steps.get_release_notes.outputs.release_notes }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload release asset
-        uses: softprops/action-gh-release@v1
-        with:
           files: fancylock-linux.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
