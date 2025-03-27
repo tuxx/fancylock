@@ -1,4 +1,4 @@
-package main 
+package main
 
 import (
 	"os/exec"
@@ -27,28 +27,28 @@ type IdleWatcher struct {
 
 // X11Locker implements the ScreenLocker interface for X11
 type X11Locker struct {
-	config           Configuration
-	conn             *xgb.Conn
-	screen           *xproto.ScreenInfo
-	window           xproto.Window
-	gc               xproto.Gcontext
-	width            uint16
-	height           uint16
-	helper           *LockHelper
-	mediaPlayer      *MediaPlayer
-	passwordBuf      string
-	isLocked         bool
-	passwordDots     []bool // true for filled, false for empty
-	maxDots          int
-	idleWatcher      *IdleWatcher
-	dotWindows       []xproto.Window // Track password dot windows
-	failedAttempts   int             // Count of failed authentication attempts
-	lockoutUntil     time.Time       // Time until which input is locked out
-	lockoutActive    bool            // Whether a lockout is currently active
-	timerRunning     bool            // Track if the countdown timer is already running
-	lastFailureTime  time.Time       // Time of the last failed attempt
-	messageWindow    xproto.Window   // Window for displaying lockout messages
-	textGC           xproto.Gcontext // Graphics context for drawing text
+	config          Configuration
+	conn            *xgb.Conn
+	screen          *xproto.ScreenInfo
+	window          xproto.Window
+	gc              xproto.Gcontext
+	width           uint16
+	height          uint16
+	helper          *LockHelper
+	mediaPlayer     *MediaPlayer
+	passwordBuf     string
+	isLocked        bool
+	passwordDots    []bool // true for filled, false for empty
+	maxDots         int
+	idleWatcher     *IdleWatcher
+	dotWindows      []xproto.Window // Track password dot windows
+	failedAttempts  int             // Count of failed authentication attempts
+	lockoutUntil    time.Time       // Time until which input is locked out
+	lockoutActive   bool            // Whether a lockout is currently active
+	timerRunning    bool            // Track if the countdown timer is already running
+	lastFailureTime time.Time       // Time of the last failed attempt
+	messageWindow   xproto.Window   // Window for displaying lockout messages
+	textGC          xproto.Gcontext // Graphics context for drawing text
 }
 
 // MediaType defines the type of media file
@@ -88,34 +88,34 @@ type MediaPlayer struct {
 type Configuration struct {
 	// Directory containing media files to play during lock screen
 	MediaDir string `json:"media_dir"`
-	
+
 	// Whether to lock the screen immediately on startup
 	LockScreen bool `json:"lock_screen"`
-	
+
 	// List of supported file extensions for media files
 	SupportedExt []string `json:"supported_extensions"`
-	
+
 	// Idle timeout in seconds before auto-locking
 	IdleTimeout int `json:"idle_timeout"`
-	
+
 	// PAM service name to use for authentication
 	PamService string `json:"pam_service"`
-	
+
 	// Whether to include non-video media files (like images)
 	IncludeImages bool `json:"include_images"`
-	
+
 	// How long to display each image in seconds (if static media is used)
 	ImageDisplayTime int `json:"image_display_time"`
-	
+
 	// Background color (in hex format) for the lock screen
 	BackgroundColor string `json:"background_color"`
-	
+
 	// Whether to blur background before locking
 	BlurBackground bool `json:"blur_background"`
-	
+
 	// External player command to use (like mpv)
 	MediaPlayerCmd string `json:"media_player_cmd"`
-	
+
 	// Enable debug exit with ESC or Q key
 	DebugExit bool `json:"debug_exit"`
 }
@@ -124,7 +124,7 @@ type Configuration struct {
 type ScreenLocker interface {
 	// Lock immediately locks the screen
 	Lock() error
-	
+
 	// StartIdleMonitor starts monitoring for user inactivity and locks after the timeout
 	StartIdleMonitor() error
 }

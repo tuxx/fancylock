@@ -28,10 +28,10 @@ const (
 var (
 	// currentLevel is the current logging level
 	currentLevel LogLevel = LevelInfo
-	
+
 	// logger is the standard logger instance
 	logger = log.New(os.Stderr, "", log.LstdFlags)
-	
+
 	// debugMode controls whether debug logging is enabled
 	debugMode = false
 )
@@ -40,7 +40,7 @@ var (
 func InitLogger(level LogLevel, debugEnabled bool) {
 	currentLevel = level
 	debugMode = debugEnabled
-	
+
 	// If in debug mode, include file and line number in log output
 	if debugEnabled {
 		logger.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -75,16 +75,16 @@ func getCallerInfo() string {
 	if !debugMode {
 		return ""
 	}
-	
+
 	_, file, line, ok := runtime.Caller(3) // Skip three frames to get to the actual caller
 	if !ok {
 		return ""
 	}
-	
+
 	// Extract just the filename from the full path
 	parts := strings.Split(file, "/")
 	filename := parts[len(parts)-1]
-	
+
 	return fmt.Sprintf("[%s:%d] ", filename, line)
 }
 
@@ -92,7 +92,7 @@ func getCallerInfo() string {
 func formatLog(level string, format string, args ...interface{}) string {
 	timestamp := time.Now().Format("2006/01/02 15:04:05")
 	callerInfo := getCallerInfo()
-	
+
 	// Format the actual message
 	var message string
 	if len(args) > 0 {
@@ -100,7 +100,7 @@ func formatLog(level string, format string, args ...interface{}) string {
 	} else {
 		message = format
 	}
-	
+
 	return fmt.Sprintf("%s %s%s: %s", timestamp, callerInfo, level, message)
 }
 

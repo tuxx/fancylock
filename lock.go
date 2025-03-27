@@ -19,13 +19,13 @@ func NewPamAuthenticator(config Configuration) *PamAuthenticator {
 	if err == nil {
 		username = currentUser.Username
 	}
-	
+
 	// Use default PAM service from config
 	serviceName := config.PamService
 	if serviceName == "" {
 		serviceName = "system-auth"
 	}
-	
+
 	return &PamAuthenticator{
 		serviceName: serviceName,
 		username:    username,
@@ -55,7 +55,7 @@ func (a *PamAuthenticator) Authenticate(password string) AuthResult {
 			return "", errors.New("unexpected conversation style")
 		}
 	}
-	
+
 	// Start PAM transaction
 	t, err := pam.StartFunc(a.serviceName, a.username, conv)
 	if err != nil {
@@ -64,7 +64,7 @@ func (a *PamAuthenticator) Authenticate(password string) AuthResult {
 			Message: fmt.Sprintf("Failed to start PAM transaction: %v", err),
 		}
 	}
-	
+
 	// Attempt authentication
 	err = t.Authenticate(0)
 	if err != nil {
@@ -73,7 +73,7 @@ func (a *PamAuthenticator) Authenticate(password string) AuthResult {
 			Message: fmt.Sprintf("Authentication failed: %v", err),
 		}
 	}
-	
+
 	// Check account validity
 	err = t.AcctMgmt(0)
 	if err != nil {
@@ -82,10 +82,10 @@ func (a *PamAuthenticator) Authenticate(password string) AuthResult {
 			Message: fmt.Sprintf("Account validation failed: %v", err),
 		}
 	}
-	
+
 	// PAM transaction doesn't have an End() method in this library
 	// It will be automatically ended when the transaction goes out of scope
-	
+
 	return AuthResult{
 		Success: true,
 		Message: "Authentication successful",
@@ -112,7 +112,7 @@ func (h *LockHelper) CheckUserPermissions() error {
 	if os.Geteuid() == 0 {
 		return errors.New("fancylock should not be run as root for security reasons")
 	}
-	
+
 	return nil
 }
 
@@ -132,7 +132,7 @@ func (h *LockHelper) ReleaseDisplayServerLock() error {
 func (h *LockHelper) PreventSuspendDuringUnlock() func() {
 	// This is a simplified implementation - in practice you might want to use logind
 	// or other system-specific APIs to inhibit suspend
-	
+
 	// Return a cleanup function
 	return func() {
 		// Cleanup code here
@@ -143,7 +143,7 @@ func (h *LockHelper) PreventSuspendDuringUnlock() func() {
 func (h *LockHelper) DisableVTs() func() {
 	// In a real implementation, you'd use the appropriate API to disable VT switching
 	// For example, on Linux you might use an ioctl on the console
-	
+
 	// Return a cleanup function
 	return func() {
 		// Re-enable VTs
@@ -155,10 +155,10 @@ func (h *LockHelper) BlurBackground() ([]byte, error) {
 	if !h.config.BlurBackground {
 		return nil, nil
 	}
-	
+
 	// This would typically capture the screen and apply a blur
 	// Returns the blurred screenshot data
-	
+
 	return nil, nil
 }
 
@@ -170,17 +170,17 @@ func (h *LockHelper) EnsureSingleInstance() error {
 	if err != nil {
 		return fmt.Errorf("failed to open lock file: %v", err)
 	}
-	
+
 	// Try to get an exclusive lock
 	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	if err != nil {
 		file.Close()
 		return errors.New("another instance of fancylock is already running")
 	}
-	
+
 	// Keep the file open to maintain the lock
 	// In a real implementation, you'd store the file handle somewhere and close it on exit
-	
+
 	return nil
 }
 
