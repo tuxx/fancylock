@@ -2,9 +2,7 @@
 
 FancyLock is a visually appealing screen locker for Linux that plays videos or images in the background while locked. It's designed to be both secure and aesthetically pleasing.
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/bd62c40f-d491-4f75-8771-67c2743d86f4" alt="lockscreen">
-</p>
+![lockscreen](https://github.com/user-attachments/assets/bd62c40f-d491-4f75-8771-67c2743d86f4)
 
 ## Features
 
@@ -119,12 +117,11 @@ Note: The configuration also includes `background_color` and `blur_background` o
 - ✅ Password entry with visual feedback (dots)
 - ✅ Idle monitoring for automatic locking
 - ✅ Keyboard and pointer grabbing to prevent bypass
-
+- ✅ Failed password attempt limiting 
 ### What Needs Improvement
 
 - ⚠️ Error handling in some edge cases
 - ⚠️ Password entry UI could be more polished
-- ⚠️ Failed password attempt limiting (currently allows unlimited tries)
 - ⚠️ Video transition effects between media files
 - ⚠️ Memory optimization for long-running sessions
 - ⚠️ Better handling of system sleep/wake events
@@ -132,7 +129,6 @@ Note: The configuration also includes `background_color` and `blur_background` o
 
 ## Future Implementations
 
-- 🚧 Password attempt limiting with temporary lockout
 - 🚧 Wayland support
 - 🚧 Configurable UI theme and appearance
 - 🚧 Blurred background option

@@ -15,12 +15,15 @@ func main() {
 	
 	lockScreen := flag.Bool("l", false, "Lock the screen immediately")
 	flag.BoolVar(lockScreen, "lock", false, "Lock the screen immediately")
+
+	debugExit := flag.Bool("debug-exit", false, "Enable exit with ESC or Q key (for debugging)")
 	
 	flag.Parse()
 
 	// Load default configuration
 	config := DefaultConfig()
 	config.LockScreen = *lockScreen
+	config.DebugExit = *debugExit
 	
 	// Try to find and load config file
 	if *configPath == "" {

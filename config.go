@@ -25,6 +25,7 @@ func DefaultConfig() Configuration {
 		BackgroundColor: "#000000",
 		BlurBackground:  false,
 		MediaPlayerCmd:  "mpv",
+		DebugExit:       false, // Disabled by default for security
 	}
 }
 

@@ -77,9 +77,6 @@ func (l *X11Locker) Init() error {
     xproto.ChangeProperty(l.conn, xproto.PropModeReplace, l.window,
         xproto.AtomWmName, xproto.AtomString, 8, uint32(len(wmName)), []byte(wmName))
 
-    // Let's not use _NET_WM_FULLSCREEN_MONITORS as it's causing issues
-    // We'll ensure coverage using other mpv options instead
-
     // Initialize GC for drawing password dots
     gcid, err := xproto.NewGcontextId(l.conn)
     if err != nil {
@@ -98,8 +95,29 @@ func (l *X11Locker) Init() error {
         return fmt.Errorf("failed to create graphics context: %v", err)
     }
     
+    // Initialize GC for drawing text with white color
+    textGcid, err := xproto.NewGcontextId(l.conn)
+    if err != nil {
+        return fmt.Errorf("failed to allocate text graphics context ID: %v", err)
+    }
+    l.textGC = textGcid
+
+    err = xproto.CreateGCChecked(
+        l.conn,
+        l.textGC,
+        xproto.Drawable(l.screen.Root),
+        xproto.GcForeground,
+        []uint32{l.screen.WhitePixel},
+    ).Check()
+    if err != nil {
+        return fmt.Errorf("failed to create text graphics context: %v", err)
+    }
+    
     l.dotWindows = []xproto.Window{}
+    l.messageWindow = 0 // Initialize to 0 (invalid window ID)
+    
     return nil
+
 }
 
 // detectMonitors detects connected monitors
@@ -286,11 +304,37 @@ func (l *X11Locker) Lock() error {
     
     // Main event loop
     for l.isLocked {
+        // If we're in lockout mode, we need to keep updating the timer display
+        if l.lockoutActive && time.Now().Before(l.lockoutUntil) {
+            // Redraw UI to update the lockout timer
+            l.drawUI()
+            
+            // Wait for a short time before checking again
+            time.Sleep(1000 * time.Millisecond) // Update once per second
+            
+            // Check for any pending events
+            ev, err := l.conn.PollForEvent()
+            if err != nil {
+                log.Printf("Error polling for event: %v", err)
+                continue
+            }
+            
+            // Process the event if there is one
+            if ev != nil {
+                switch e := ev.(type) {
+                case xproto.KeyPressEvent:
+                    l.handleKeyPress(e)
+                }
+            }
+            
+            continue // Continue the loop to update the timer
+        }
+        
+        // Regular event handling for non-lockout mode
         ev, err := l.conn.WaitForEvent()
         if err != nil {
             if strings.Contains(err.Error(), "BadRequest") {
                 // This is likely a harmless error related to X11 extensions
-                // Log it but don't spam the log
                 log.Printf("Ignoring X11 BadRequest error (this is usually harmless)")
             } else {
                 log.Printf("Error waiting for event: %v", err)
@@ -388,6 +432,37 @@ func (l *X11Locker) hideCursor() error {
 
 // handleKeyPress processes keyboard input
 func (l *X11Locker) handleKeyPress(e xproto.KeyPressEvent) {
+	// Check if we're in a lockout period
+	if l.lockoutActive && time.Now().Before(l.lockoutUntil) {
+		// During lockout, only allow Escape or Q for debug exit
+		keySyms := xproto.GetKeyboardMapping(l.conn, e.Detail, 1)
+		reply, err := keySyms.Reply()
+		if err != nil {
+			log.Printf("Error getting keyboard mapping: %v", err)
+			return
+		}
+		
+		// Check for debug exit keys
+		if len(reply.Keysyms) > 0 {
+			keySym := reply.Keysyms[0]
+			// ESC key or Q key (lowercase or uppercase)
+			if l.config.DebugExit && (keySym == 0xff1b || keySym == 0x71 || keySym == 0x51) {
+				log.Printf("Debug exit triggered during lockout")
+				l.isLocked = false
+				return
+			}
+			
+			// For regular Escape during lockout, just clear password
+			if keySym == 0xff1b { // Escape key
+				l.passwordBuf = ""
+				l.passwordDots = make([]bool, 0)
+			}
+		}
+		
+		// For all other keys, do nothing during lockout
+		return
+	}
+	
 	// Get the keysym for this keycode
 	keySyms := xproto.GetKeyboardMapping(l.conn, e.Detail, 1)
 	reply, err := keySyms.Reply()
@@ -400,7 +475,14 @@ func (l *X11Locker) handleKeyPress(e xproto.KeyPressEvent) {
 	if len(reply.Keysyms) > 0 {
 		keySym := reply.Keysyms[0]
 		
-		// Handle special keys
+		// Check for debug exit key first
+		if l.config.DebugExit && (keySym == 0xff1b || keySym == 0x71 || keySym == 0x51) { // ESC or Q/q
+			log.Printf("Debug exit triggered")
+			l.isLocked = false
+			return
+		}
+		
+		// Regular key handling
 		switch keySym {
 		case 0xff0d, 0xff8d: // Return, KP_Enter
 			// Try to authenticate
@@ -437,17 +519,76 @@ func (l *X11Locker) handleKeyPress(e xproto.KeyPressEvent) {
 
 // authenticate attempts to verify the password
 func (l *X11Locker) authenticate() {
+    // Check if we're in a lockout period
+    if l.lockoutActive && time.Now().Before(l.lockoutUntil) {
+        // Still in lockout period, don't even attempt authentication
+        remainingTime := l.lockoutUntil.Sub(time.Now()).Round(time.Second)
+        log.Printf("Authentication locked out for another %v", remainingTime)
+        l.passwordBuf = ""
+        
+        // Keep the dots for shake animation
+        // We'll clear them after the animation
+        
+        // Shake the password field to indicate lockout
+        go l.shakePasswordField()
+        return
+    }
+    
+    // If we were in a lockout but it's expired, clear the lockout state
+    if l.lockoutActive && time.Now().After(l.lockoutUntil) {
+        log.Printf("Lockout period has expired, clearing lockout state")
+        l.lockoutActive = false
+    }
+    
+    // Add debug log for password attempt (don't log actual password)
+    log.Printf("Attempting authentication with password of length: %d", len(l.passwordBuf))
+    
     // Try to authenticate using PAM
     result := l.helper.authenticator.Authenticate(l.passwordBuf)
     
+    // Detailed logging of authentication result
+    log.Printf("Authentication result: success=%v, message=%s", result.Success, result.Message)
+    
     if result.Success {
-        // Authentication successful, unlock
+        // Authentication successful, unlock and reset counters
         l.isLocked = false
+        l.failedAttempts = 0
+        l.lockoutActive = false
         log.Printf("Authentication successful, unlocking screen")
     } else {
-        // Authentication failed, clear password
-        log.Printf("Authentication failed: %s", result.Message)
+        // Authentication failed, increment counter
+        l.failedAttempts++
+        l.lastFailureTime = time.Now()
+        log.Printf("Authentication failed (%d/3 attempts): %s", l.failedAttempts, result.Message)
+        
+        // Clear password
         l.passwordBuf = ""
+        
+        // Check if we should implement a lockout
+        if l.failedAttempts >= 3 {
+            // Determine the lockout duration based on recent failures
+            var lockoutDuration time.Duration
+            
+            // Check if the 3 failures happened within a short period (e.g., 5 minutes)
+            if time.Since(l.lastFailureTime) < 5*time.Minute {
+                // Repeated quick failures, implement the longer 5-minute lockout
+                lockoutDuration = 5 * time.Minute
+                log.Printf("Multiple rapid failures detected, locking out for 5 minutes")
+            } else {
+                // Standard lockout of 1 minute
+                lockoutDuration = 1 * time.Minute
+                log.Printf("Failed 3 attempts, locking out for 1 minute")
+            }
+            
+            // Set the lockout time
+            l.lockoutUntil = time.Now().Add(lockoutDuration)
+            l.lockoutActive = true
+            l.failedAttempts = 0 // Reset counter after implementing lockout
+            
+            // Make sure the lockout message is displayed
+            log.Printf("Lockout activated until: %v", l.lockoutUntil)
+            l.drawLockoutMessage()
+        }
         
         // Keep the dots for shake animation
         // We'll clear them after the animation
@@ -506,9 +647,195 @@ func (l *X11Locker) shakePasswordField() {
 
 // drawUI draws the complete UI
 func (l *X11Locker) drawUI() {
-	// Draw the password UI
-	l.drawPasswordUI()
+    // Check if we're in lockout mode
+    if l.lockoutActive && time.Now().Before(l.lockoutUntil) {
+        // Draw lockout message
+        l.drawLockoutMessage()
+    }
+    
+    // Draw the password UI
+    l.drawPasswordUI()
 }
+
+// drawLockoutMessage displays a message indicating the system is locked out
+func (l *X11Locker) drawLockoutMessage() {
+    // If we don't already have a message window, create one
+    if l.messageWindow == 0 {
+        wid, err := xproto.NewWindowId(l.conn)
+        if err != nil {
+            log.Printf("Failed to create message window ID: %v", err)
+            return
+        }
+        l.messageWindow = wid
+        
+        // Center the window
+        width := uint16(400)
+        height := uint16(120)
+        x := int16((l.width - width) / 2)
+        y := int16((l.height - height) / 2) 
+        
+        // Create the window with a dark gray background
+        err = xproto.CreateWindowChecked(
+            l.conn,
+            l.screen.RootDepth,
+            l.messageWindow,
+            l.screen.Root,
+            x, y, width, height,
+            2, // Thin border for a cleaner look
+            xproto.WindowClassInputOutput,
+            l.screen.RootVisual,
+            xproto.CwBackPixel | xproto.CwBorderPixel | xproto.CwOverrideRedirect,
+            []uint32{
+                0x00333333, // Dark gray background
+                0x00444444, // Slightly lighter border
+                1,          // Override redirect
+            },
+        ).Check()
+        
+        if err != nil {
+            log.Printf("Failed to create message window: %v", err)
+            l.messageWindow = 0
+            return
+        }
+        
+        // Set window properties to keep it on top
+        atomName := "_NET_WM_STATE"
+        atom, err := xproto.InternAtom(l.conn, false, uint16(len(atomName)), atomName).Reply()
+        if err == nil && atom != nil {
+            atomName = "_NET_WM_STATE_ABOVE"
+            aboveAtom, err := xproto.InternAtom(l.conn, false, uint16(len(atomName)), atomName).Reply()
+            if err == nil && aboveAtom != nil {
+                xproto.ChangeProperty(l.conn, xproto.PropModeReplace, l.messageWindow, 
+                    atom.Atom, xproto.AtomAtom, 32, 1, []byte{
+                    byte(aboveAtom.Atom),
+                    byte(aboveAtom.Atom >> 8),
+                    byte(aboveAtom.Atom >> 16),
+                    byte(aboveAtom.Atom >> 24),
+                })
+            }
+        }
+    }
+    
+    // Show the window
+    xproto.MapWindow(l.conn, l.messageWindow)
+    
+    // Get remaining lockout time
+    remainingTime := l.lockoutUntil.Sub(time.Now())
+    if remainingTime < 0 {
+        remainingTime = 0
+    }
+    
+    // Format the time nicely
+    minutes := int(remainingTime.Minutes())
+    seconds := int(remainingTime.Seconds()) % 60
+    timeString := fmt.Sprintf("%02d:%02d", minutes, seconds)
+    
+    // Clear the window with our background color
+    xproto.PolyFillRectangle(l.conn, xproto.Drawable(l.messageWindow), l.gc, []xproto.Rectangle{
+        {0, 0, 400, 120},
+    })
+    
+    // Draw the title - simple, centered and larger
+    title := "LOCKED OUT"
+    titleX := (400 - uint16(len(title)*8)) / 2  // Approximate width of 8 pixels per character
+    
+    xproto.ImageText8(l.conn, uint8(len(title)), 
+        xproto.Drawable(l.messageWindow), l.textGC, 
+        int16(titleX), 50, title)
+    
+    // Draw the timer - centered below the title
+    timerText := fmt.Sprintf("Try again in %s", timeString)
+    timerX := (400 - uint16(len(timerText)*8)) / 2
+    
+    xproto.ImageText8(l.conn, uint8(len(timerText)), 
+        xproto.Drawable(l.messageWindow), l.textGC, 
+        int16(timerX), 80, timerText)
+    
+    // Force window to be visible and on top
+    xproto.ConfigureWindow(
+        l.conn,
+        l.messageWindow,
+        xproto.ConfigWindowStackMode,
+        []uint32{xproto.StackModeAbove},
+    )
+    
+    // Sync to ensure changes are sent to the X server
+    l.conn.Sync()
+    
+    // Start a timer to update the countdown
+    if !l.timerRunning {
+        l.timerRunning = true
+        go func() {
+            ticker := time.NewTicker(1 * time.Second)
+            defer ticker.Stop()
+            
+            for l.lockoutActive && time.Now().Before(l.lockoutUntil) && l.isLocked {
+                select {
+                case <-ticker.C:
+                    // Only update the timer text, not recreate the whole window
+                    l.drawLockoutMessage()
+                }
+            }
+            
+            l.timerRunning = false
+            
+            // When lockout is over, hide the window if we're still locked
+            if l.isLocked {
+                xproto.UnmapWindow(l.conn, l.messageWindow)
+            }
+        }()
+    }
+}
+
+// updateLockoutTimerDisplay updates the countdown timer in the lockout message window
+func (l *X11Locker) updateLockoutTimerDisplay() {
+    if l.messageWindow == 0 {
+        return
+    }
+    
+    // Get remaining lockout time
+    remainingTime := l.lockoutUntil.Sub(time.Now())
+    if remainingTime < 0 {
+        remainingTime = 0
+    }
+    
+    // Format the time nicely - show minutes and seconds
+    minutes := int(remainingTime.Minutes())
+    seconds := int(remainingTime.Seconds()) % 60
+    timeString := fmt.Sprintf("%02d:%02d", minutes, seconds)
+    
+    // Create a stronger, clearer message
+    message := "TOO MANY FAILED PASSWORD ATTEMPTS"
+    timeMessage := fmt.Sprintf("LOCKED OUT FOR: %s", timeString)
+    
+    // Clear the window by filling it with the background color
+    xproto.PolyFillRectangle(l.conn, xproto.Drawable(l.messageWindow), l.gc, []xproto.Rectangle{
+        {0, 0, 400, 100},
+    })
+    
+    // Draw the main message with a specific font if available
+    // We're using the text graphics context (textGC) which is white
+    xproto.ImageText8(l.conn, uint8(len(message)), 
+        xproto.Drawable(l.messageWindow), l.textGC, 
+        50, 40, // X, Y position within the window - more centered
+        message)
+    
+    // Draw the time message below it - make it larger/more visible
+    xproto.ImageText8(l.conn, uint8(len(timeMessage)), 
+        xproto.Drawable(l.messageWindow), l.textGC, 
+        85, 70, // X, Y position within the window - centered
+        timeMessage)
+    
+    // Force a redraw/refresh
+    xproto.ClearArea(l.conn, true, l.messageWindow, 0, 0, 0, 0)
+    
+    // Sync the X connection to ensure changes are sent to the server
+    l.conn.Sync()
+    
+    // Log for debugging
+    log.Printf("Updated lockout timer: %s", timeString)
+}
+
 // drawPasswordUI draws the password entry UI
 func (l *X11Locker) drawPasswordUI() {
 	// Draw only the password dots
@@ -635,6 +962,12 @@ func (l *X11Locker) clearPasswordDots() {
 func (l *X11Locker) cleanup() {
 	// Clear password dots
 	l.clearPasswordDots()
+	
+	// Clear message window if it exists
+	if l.messageWindow != 0 {
+		xproto.DestroyWindow(l.conn, l.messageWindow)
+		l.messageWindow = 0
+	}
 	
 	// Stop media player
 	l.mediaPlayer.Stop()
