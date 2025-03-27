@@ -1,0 +1,9 @@
+#!/bin/bash
+
+# Only append note if gofmt flag is present
+if [ -f .git/.gofmt-flag ]; then
+    echo "" >> "$1"
+    echo "[auto] go fmt applied to staged files" >> "$1"
+    rm .git/.gofmt-flag
+fi
+

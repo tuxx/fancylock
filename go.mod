@@ -1,4 +1,4 @@
-module fancylock
+module github.com/tuxx/fancylock 
 
 go 1.24.0
 

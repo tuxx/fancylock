@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	il "github.com/tuxx/fancylock/internal"
 	"log"
 	"os"
 	"path/filepath"
@@ -23,6 +24,8 @@ func main() {
 	// Add debug mode flag
 	debugMode := flag.Bool("log", false, "Enable debug logging")
 
+	flagVersion := flag.Bool("v", false, "Show version info")
+
 	// Set custom usage output
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "FancyLock: A media-playing screen locker\n\n")
@@ -38,10 +41,10 @@ func main() {
 
 	// Initialize the logger
 	if *debugMode {
-		InitLogger(LevelDebug, true)
-		Debug("Debug logging enabled")
+		il.InitLogger(il.LevelDebug, true)
+		il.Debug("Debug logging enabled")
 	} else {
-		InitLogger(LevelError, false)
+		il.InitLogger(il.LevelError, false)
 	}
 
 	// Show help if explicitly requested or if no arguments provided and no action flags set
@@ -50,8 +53,13 @@ func main() {
 		return
 	}
 
+	if *flagVersion {
+		fmt.Printf("Fancylock version %s (%s) built on %s\n", il.Version, il.Commit, il.BuildDate)
+		return
+	}
+
 	// Load default configuration
-	config := DefaultConfig()
+	config := il.DefaultConfig()
 	config.LockScreen = *lockScreen
 	config.DebugExit = *debugExit
 
@@ -71,7 +79,7 @@ func main() {
 
 	// If config file is provided or found, load it
 	if *configPath != "" {
-		err := LoadConfig(*configPath, &config)
+		err := il.LoadConfig(*configPath, &config)
 		if err != nil {
 			log.Printf("Error loading config: %v", err)
 			// Continue with default config
@@ -83,14 +91,14 @@ func main() {
 	fmt.Printf("Detected display server: %s\n", displayServer)
 
 	// Initialize the screen locker based on display server
-	var locker ScreenLocker
+	var locker il.ScreenLocker
 
 	switch displayServer {
 	case "wayland":
 		// We'll implement Wayland support later
 		log.Fatalf("Wayland support not yet implemented")
 	case "x11":
-		locker = NewX11Locker(config)
+		locker = il.NewX11Locker(config)
 	default:
 		log.Fatalf("Unsupported display server: %s", displayServer)
 	}

@@ -14,62 +14,137 @@ FancyLock is a visually appealing screen locker for Linux that plays videos or i
 - Play videos or images as lock screen backgrounds
 - Support for multiple monitors
 - PAM authentication for secure login
-- Automatic locking after idle time
 - Customizable settings
+- Embedded version metadata (`--version`)
 
 ## Installation
 
-### Prerequisites
+### Option 1: Install from latest release (Recommended)
 
-- Go 1.16 or higher
+<details>
+<summary>Download and install the latest pre-built binary:</summary>
+  
+```bash
+# Download the latest release
+curl -L -o fancylock.tar.gz https://github.com/tuxx/fancylock/releases/latest/download/fancylock-linux-amd64.tar.gz
+
+# Extract it
+tar -xzvf fancylock.tar.gz
+
+# Make it executable
+chmod +x fancylock-linux-amd64
+
+# Optional: install system-wide
+sudo mv fancylock-linux-amd64 /usr/local/bin/fancylock
+
+# Create config directory
+mkdir -p ~/.config/fancylock
+
+# Create default config file
+cat > ~/.config/fancylock/config.json << 'EOF'
+{
+  "media_dir": "$HOME/Videos",
+  "lock_screen": false,
+  "supported_extensions": [".mp4", ".mkv", ".mov", ".avi", ".webm"],
+  "pam_service": "system-auth",
+  "include_images": true,
+  "image_display_time": 30,
+  "background_color": "#000000",
+  "blur_background": false,
+  "media_player_cmd": "mpv"
+}
+EOF
+```
+</details>
+
+### Option 2: Build from source
+
+#### Prerequisites
+
+- Go 1.21 or higher
 - X11 development libraries
 - mpv (for video/image playback)
 - PAM development libraries
+- `make` and `git`
 
-### Installing dependencies
+#### Installing dependencies
 
-On Debian/Ubuntu systems:
-
-```bash
-sudo apt install golang libx11-dev libpam0g-dev mpv
-```
-
-On Arch Linux:
+<details>
+<summary>Debian/Ubuntu</summary>
 
 ```bash
-sudo pacman -S go libx11 pam mpv
+sudo apt install -y golang make libx11-dev libpam0g-dev mpv git
 ```
+</details>
 
-### Building from source
+<details>
+<summary>Arch Linux</summary>
+
+```bash
+sudo pacman -S go make libx11 pam mpv git
+```
+</details>
+
+#### Building the application
+
+<details>
+<summary>Build from source</summary>
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/fancylock.git
+git clone https://github.com/tuxx/fancylock.git
 cd fancylock
 
-# Build the application
-go build -o fancylock
+# Build for all supported architectures (amd64, arm64, arm)
+make
 
-# Optional: install system-wide
-sudo cp fancylock /usr/local/bin/
+# Optionally package them into .tar.gz files in ./dist
+make package
+
+# Build a native binary for your current system (puts it in ./bin/)
+make native
+
+# View embedded version info
+./bin/fancylock-native --version
+
+# Optional: install the native build system-wide
+sudo make install
 ```
+</details>
+
+### Makefile Targets
+
+| Command         | Description |
+|----------------|-------------|
+| `make`         | Build for `linux/amd64`, `arm64`, and `arm` |
+| `make native`  | Build for your local platform only |
+| `make package` | Create `.tar.gz` files in `dist/` for release |
+| `make install` | Install native build to `/usr/local/bin/fancylock` |
+| `make clean`   | Remove `bin/` and `dist/` directories |
+
 
 ## How to Use
 
 ### Basic Usage
+
+Run FancyLock without arguments to display help:
+
+```bash
+fancylock
+```
 
 Lock your screen immediately:
 
 ```bash
 fancylock -l
 # or
-fancylock --lock
+fancylock -lock
 ```
 
-Start in idle monitor mode (will lock after idle timeout):
+Check version info:
 
 ```bash
-fancylock
+fancylock -v
 ```
 
 ### Configuration
@@ -84,12 +159,14 @@ fancylock -c /path/to/config.json
 
 ### Sample Configuration
 
+<details>
+<summary>View sample config.json</summary>
+
 ```json
 {
   "media_dir": "/home/user/Videos",
   "lock_screen": false,
   "supported_extensions": [".mp4", ".mkv", ".mov", ".avi", ".webm"],
-  "idle_timeout": 300,
   "pam_service": "system-auth",
   "include_images": true,
   "image_display_time": 30,
@@ -98,13 +175,13 @@ fancylock -c /path/to/config.json
   "media_player_cmd": "mpv"
 }
 ```
+</details>
 
 ### Configuration Options
 
 - `media_dir`: Directory containing videos/images to display while locked
 - `lock_screen`: Whether to lock the screen immediately on startup
 - `supported_extensions`: File extensions to look for in the media directory
-- `idle_timeout`: Time in seconds before auto-locking (when not using -l flag)
 - `pam_service`: PAM service name for authentication
 - `include_images`: Whether to include images along with videos
 - `image_display_time`: How long to display each image in seconds
@@ -120,9 +197,10 @@ Note: The configuration also includes `background_color` and `blur_background` o
 - ✅ Multi-monitor support with correct video positioning
 - ✅ Video and image playback during lock screen
 - ✅ Password entry with visual feedback (dots)
-- ✅ Idle monitoring for automatic locking
 - ✅ Keyboard and pointer grabbing to prevent bypass
 - ✅ Failed password attempt limiting 
+- ✅ Embedded version metadata via `--version`
+
 ### What Needs Improvement
 
 - ⚠️ Error handling in some edge cases
@@ -145,9 +223,36 @@ Note: The configuration also includes `background_color` and `blur_background` o
 - 🚧 Implementation of background color and blur options
 - 🚧 Auto-generation of default config file
 
+## Developer Setup
+
+If you want to contribute to FancyLock development:
+
+<details>
+<summary>Developer setup instructions</summary>
+
+```bash
+# Clone the repository
+git clone https://github.com/tuxx/fancylock.git
+cd fancylock
+
+# Set up the Git hooks (required for all developers)
+./.githooks/setup-hooks.sh
+
+# Build the application
+go build -o fancylock
+```
+</details>
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit pull requests or open issues to improve the application.
+
+Before contributing:
+1. Run `.githooks/setup-hooks.sh` if applicable
+2. Follow the coding style used in the codebase
+3. Fork the repo
+4. Push your changes and submit a Pull Request
+5. Bother [Tuxx](https://github.com/tuxx) if it sits too long 🙂
 
 ## Acknowledgements
 

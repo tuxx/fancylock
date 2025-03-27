@@ -8,9 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      GOOS: linux
-      GOARCH: amd64
     outputs:
       build_success: ${{ steps.build_step.outputs.build_success }}
     steps:
@@ -20,36 +17,36 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.24.0'  # adjust as needed
+          go-version: '1.24.0'
 
-      - name: Install dependencies and build binary
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpam0g-dev make
+
+      - name: Build all binaries with Makefile
         id: build_step
         run: |
-          # Install PAM development libraries
-          sudo apt-get update
-          sudo apt-get install -y libpam0g-dev
-          
-          # Build the project and produce the binary "fancylock"
-          go build -ldflags="-s -w" -o fancylock .
-          
-          # If we get here, build succeeded
+          make amd64
+          make package
           echo "build_success=true" >> $GITHUB_OUTPUT
         continue-on-error: true
+
+      - name: Print version info
+        if: steps.build_step.outputs.build_success == 'true'
+        run: |
+          ./bin/fancylock-linux-amd64 --version || echo "Version info not available"
 
       - name: Check if build succeeded
         if: steps.build_step.outputs.build_success != 'true'
         run: exit 1
 
-      - name: Archive binary
+      - name: Upload dist/ artifacts
         if: steps.build_step.outputs.build_success == 'true'
-        run: tar -czvf fancylock-linux.tar.gz fancylock
-        
-      - name: Upload artifact for release job
-        if: steps.build_step.outputs.build_success == 'true'
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v4
         with:
-          name: fancylock-artifact
-          path: fancylock-linux.tar.gz
+          name: fancylock-artifacts
+          path: dist/
           retention-days: 1
 
   release:
@@ -59,11 +56,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-        
-      - name: Download build artifact
+
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: fancylock-artifact
+          name: fancylock-artifacts
+          path: dist/
 
       - name: Get commit message for release notes
         id: get_release_notes
@@ -73,12 +71,12 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        id: create_release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           body: ${{ steps.get_release_notes.outputs.release_notes }}
-          files: fancylock-linux.tar.gz
+          files: dist/*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
