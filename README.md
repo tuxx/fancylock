@@ -2,7 +2,9 @@
 
 FancyLock is a visually appealing screen locker for Linux that plays videos or images in the background while locked. It's designed to be both secure and aesthetically pleasing.
 
-![lockscreen](https://github.com/user-attachments/assets/bd62c40f-d491-4f75-8771-67c2743d86f4)
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/bd62c40f-d491-4f75-8771-67c2743d86f4" alt="lockscreen">
+</p>
 
 ## Features
 
