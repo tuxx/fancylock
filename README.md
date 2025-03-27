@@ -1,5 +1,8 @@
 # FancyLock
 
+[![Latest Release](https://img.shields.io/github/v/release/tuxx/fancylock)](https://github.com/tuxx/fancylock/releases)
+[![Build](https://github.com/tuxx/fancylock/actions/workflows/build.yml/badge.svg)](https://github.com/tuxx/fancylock/actions/workflows/build.yml)
+
 FancyLock is a visually appealing screen locker for Linux that plays videos or images in the background while locked. It's designed to be both secure and aesthetically pleasing.
 
 <p align="center">
