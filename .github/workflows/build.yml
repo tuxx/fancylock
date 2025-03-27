@@ -46,7 +46,7 @@ jobs:
         
       - name: Upload artifact for release job
         if: steps.build_step.outputs.build_success == 'true'
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-pages-artifact@v3
         with:
           name: fancylock-artifact
           path: fancylock-linux.tar.gz
