@@ -35,7 +35,7 @@ jobs:
       - name: Print version info
         if: steps.build_step.outputs.build_success == 'true'
         run: |
-          ./bin/fancylock-linux-amd64 --version || echo "Version info not available"
+          ./bin/fancylock-linux-amd64 -v || echo "Version info not available"
 
       - name: Check if build succeeded
         if: steps.build_step.outputs.build_success != 'true'
