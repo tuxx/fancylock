@@ -7,6 +7,8 @@ import (
 
 	"github.com/BurntSushi/xgb"
 	"github.com/BurntSushi/xgb/xproto"
+	"github.com/neurlang/wayland/wl"
+	zxdg "github.com/neurlang/wayland/xdg"
 )
 
 // Monitor represents a physical display
@@ -139,4 +141,63 @@ type AuthResult struct {
 type PamAuthenticator struct {
 	serviceName string
 	username    string
+}
+
+// WaylandLocker implements the ScreenLocker interface for Wayland (Hyprland)
+//type WaylandLocker struct {
+//	config          Configuration
+//	helper          *LockHelper
+//	mediaPlayer     *MediaPlayer
+//	passwordBuf     string
+//	isLocked        bool
+//	passwordDots    []bool // true for filled, false for empty
+//	maxDots         int
+//	idleWatcher     *WaylandIdleWatcher
+//	failedAttempts  int             // Count of failed authentication attempts
+//	lockoutUntil    time.Time       // Time until which input is locked out
+//	lockoutActive   bool            // Whether a lockout is currently active
+//	timerRunning    bool            // Track if the countdown timer is already running
+//	lastFailureTime time.Time       // Time of the last failed attempt
+//	monitors        []Monitor       // Detected monitors
+//
+//	// Wayland display/window management
+//	display          *WaylandDisplay
+//	window           *WaylandWindow
+//}
+
+// WaylandDisplay handles the Wayland display connection
+type WaylandDisplay struct {
+	display    *wl.Display
+	registry   *wl.Registry
+	compositor *wl.Compositor
+	shell      *zxdg.WmBase
+	shm        *wl.Shm
+	hasXrgb    bool
+}
+
+// WaylandWindow represents a Wayland window
+type WaylandWindow struct {
+	display          *WaylandDisplay
+	width, height    int
+	surface          *wl.Surface
+	xdgSurface       *zxdg.Surface
+	xdgToplevel      *zxdg.Toplevel
+	buffers          [2]WaylandBuffer
+	callback         *wl.Callback
+	waitForConfigure bool
+	locker           *WaylandLocker
+}
+
+// WaylandBuffer represents a buffer for drawing
+type WaylandBuffer struct {
+	buffer  *wl.Buffer
+	shmData []byte
+	busy    bool
+}
+
+// WaylandIdleWatcher monitors user activity on Wayland
+type WaylandIdleWatcher struct {
+	timeout      time.Duration
+	stopChan     chan struct{}
+	parentLocker *WaylandLocker
 }
