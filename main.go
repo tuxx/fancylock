@@ -108,6 +108,7 @@ func main() {
 
 	// If -l/--lock flag is set, lock immediately
 	if config.LockScreen {
+		// Not a WaylandLocker, use the regular Lock method
 		if err := locker.Lock(); err != nil {
 			log.Fatalf("Failed to lock screen: %v", err)
 		}
