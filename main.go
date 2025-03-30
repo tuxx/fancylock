@@ -94,6 +94,9 @@ func main() {
 	var locker il.ScreenLocker
 
 	switch displayServer {
+	case "hyprland":
+		log.Printf("Using Hyprland-specific Wayland locker")
+		locker = il.NewWaylandLocker(config)
 	case "wayland":
 		// We'll implement Wayland support later
 		log.Fatalf("Wayland support not yet implemented")
@@ -105,6 +108,7 @@ func main() {
 
 	// If -l/--lock flag is set, lock immediately
 	if config.LockScreen {
+		// Not a WaylandLocker, use the regular Lock method
 		if err := locker.Lock(); err != nil {
 			log.Fatalf("Failed to lock screen: %v", err)
 		}
@@ -113,6 +117,12 @@ func main() {
 
 // DetectDisplayServer detects whether X11 or Wayland is being used
 func DetectDisplayServer() string {
+	// Check for Hyprland specifically
+	hyprlandSignature := os.Getenv("HYPRLAND_INSTANCE_SIGNATURE")
+	if hyprlandSignature != "" {
+		return "hyprland"
+	}
+
 	// Check for Wayland session
 	waylandDisplay := os.Getenv("WAYLAND_DISPLAY")
 	if waylandDisplay != "" {
