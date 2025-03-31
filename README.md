@@ -15,7 +15,7 @@ FancyLock is a visually appealing screen locker for Linux that plays videos or i
 - Support for multiple monitors
 - PAM authentication for secure login
 - Customizable settings
-- Embedded version metadata (`--version`)
+- Embedded version metadata (`-v`)
 
 ## Installation
 
