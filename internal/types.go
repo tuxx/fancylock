@@ -120,6 +120,12 @@ type Configuration struct {
 
 	// Enable debug exit with ESC or Q key
 	DebugExit bool `json:"debug_exit"`
+
+	// Command to run before locking the screen
+	PreLockCommand string `json:"pre_lock_command"`
+
+	// Command to run after unlocking the screen
+	PostLockCommand string `json:"post_lock_command"`
 }
 
 // ScreenLocker interface defines methods that any screen locker should implement

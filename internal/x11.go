@@ -272,6 +272,12 @@ func (l *X11Locker) Lock() error {
 	}
 	Info("No other instances found")
 
+	// Run pre-lock command if configured
+	if err := l.helper.RunPreLockCommand(); err != nil {
+		Warn("Pre-lock command error: %v", err)
+		// Continue with locking even if the pre-lock command fails
+	}
+
 	// Initialize X11 connection and resources
 	Info("Initializing X11 resources")
 	if err := l.Init(); err != nil {
@@ -1175,6 +1181,12 @@ func (l *X11Locker) cleanup() {
 	// Close X connection
 	Debug("Closing X connection")
 	l.conn.Close()
+
+	// Run post-lock command if configured
+	if err := l.helper.RunPostLockCommand(); err != nil {
+		Warn("Post-lock command error: %v", err)
+	}
+
 	Info("Cleanup completed")
 }
 

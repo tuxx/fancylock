@@ -106,6 +106,40 @@ func NewLockHelper(config Configuration) *LockHelper {
 	}
 }
 
+// RunPreLockCommand executes the configured pre-lock command
+func (h *LockHelper) RunPreLockCommand() error {
+	if h.config.PreLockCommand == "" {
+		return nil // No command to run
+	}
+
+	Info("Running pre-lock command: %s", h.config.PreLockCommand)
+	output, err := h.RunCommand("sh", "-c", h.config.PreLockCommand)
+	if err != nil {
+		Error("Pre-lock command failed: %v - %s", err, output)
+		return fmt.Errorf("pre-lock command failed: %v", err)
+	}
+
+	Debug("Pre-lock command output: %s", output)
+	return nil
+}
+
+// RunPostLockCommand executes the configured post-lock command
+func (h *LockHelper) RunPostLockCommand() error {
+	if h.config.PostLockCommand == "" {
+		return nil // No command to run
+	}
+
+	Info("Running post-lock command: %s", h.config.PostLockCommand)
+	output, err := h.RunCommand("sh", "-c", h.config.PostLockCommand)
+	if err != nil {
+		Error("Post-lock command failed: %v - %s", err, output)
+		return fmt.Errorf("post-lock command failed: %v", err)
+	}
+
+	Debug("Post-lock command output: %s", output)
+	return nil
+}
+
 // CheckUserPermissions verifies that the user has the necessary permissions
 func (h *LockHelper) CheckUserPermissions() error {
 	// Check if we're running as root (which we shouldn't be for security reasons)

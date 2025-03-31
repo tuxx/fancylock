@@ -467,6 +467,12 @@ func (l *WaylandLocker) Lock() error {
 	Debug("\n=== LOCK FUNCTION STARTED ===")
 	var err error
 
+	// Run pre-lock command if configured
+	if err := l.helper.RunPreLockCommand(); err != nil {
+		Warn("Pre-lock command error: %v", err)
+		// Continue with locking even if the pre-lock command fails
+	}
+
 	// 1. Connect to Wayland display
 	l.display, err = wlclient.DisplayConnect(nil)
 	if err != nil {
@@ -768,6 +774,13 @@ func (l *WaylandLocker) authenticate() {
 				}()
 
 				time.Sleep(100 * time.Millisecond)
+			}
+
+			// Run post-lock command before signaling completion
+			if err := l.helper.RunPostLockCommand(); err != nil {
+				Warn("Post-lock command error: %v", err)
+			} else {
+				Info("Post-lock command executed successfully")
 			}
 
 			Debug("Signaling completion")

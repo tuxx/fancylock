@@ -26,6 +26,8 @@ func DefaultConfig() Configuration {
 		BlurBackground:   false,
 		MediaPlayerCmd:   "mpv",
 		DebugExit:        false, // Disabled by default for security
+		PreLockCommand:   "",    // No default pre-lock command
+		PostLockCommand:  "",    // No default post-lock command
 	}
 }
 

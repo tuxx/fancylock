@@ -35,6 +35,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  %s -l                   # Lock screen immediately\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s -c /path/to/config   # Use specific config file\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "\nConfiguration Options (in config.json):\n")
+		fmt.Fprintf(os.Stderr, "  pre_lock_command:      Command to run before locking the screen\n")
+		fmt.Fprintf(os.Stderr, "  post_lock_command:     Command to run after unlocking the screen\n")
+		fmt.Fprintf(os.Stderr, "\nExample pre/post-lock commands:\n")
+		fmt.Fprintf(os.Stderr, "  pre_lock_command:  \"notify-send 'Locking screen in 5 seconds' && sleep 5\"\n")
+		fmt.Fprintf(os.Stderr, "  post_lock_command: \"xset dpms force on && notify-send 'Welcome back!'\"\n")
 	}
 
 	flag.Parse()
