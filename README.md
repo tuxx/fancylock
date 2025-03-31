@@ -51,7 +51,9 @@ cat > ~/.config/fancylock/config.json << 'EOF'
   "image_display_time": 30,
   "background_color": "#000000",
   "blur_background": false,
-  "media_player_cmd": "mpv"
+  "media_player_cmd": "mpv",
+  "pre_lock_command": "",
+  "post_lock_command": ""
 }
 EOF
 ```
@@ -172,7 +174,9 @@ fancylock -c /path/to/config.json
   "image_display_time": 30,
   "background_color": "#000000",
   "blur_background": false,
-  "media_player_cmd": "mpv"
+  "media_player_cmd": "mpv",
+  "pre_lock_command": "pypr hide mywindow",
+  "post_lock_command": "pypr show mywindow"
 }
 ```
 </details>
@@ -186,6 +190,8 @@ fancylock -c /path/to/config.json
 - `include_images`: Whether to include images along with videos
 - `image_display_time`: How long to display each image in seconds
 - `media_player_cmd`: Command to use for playing media (default: mpv)
+- `pre_lock_command`: Execute this command before locking the screen.
+- `post_lock_command`: Execute this command after unlocking the screen.
 
 Note: The configuration also includes `background_color` and `blur_background` options, but these are not currently implemented.
 
@@ -194,25 +200,24 @@ Note: The configuration also includes `background_color` and `blur_background` o
 ### What's Working
 
 - ✅ X11 screen locking with PAM authentication
+- ✅ Basic hyprland support
 - ✅ Multi-monitor support with correct video positioning
 - ✅ Video and image playback during lock screen
 - ✅ Password entry with visual feedback (dots)
 - ✅ Keyboard and pointer grabbing to prevent bypass
 - ✅ Failed password attempt limiting 
-- ✅ Embedded version metadata via `--version`
+- ✅ Embedded version metadata via `-v`
 
 ### What Needs Improvement
 
 - ⚠️ Error handling in some edge cases
 - ⚠️ Password entry UI could be more polished
-- ⚠️ Video transition effects between media files
 - ⚠️ Memory optimization for long-running sessions
 - ⚠️ Better handling of system sleep/wake events
 - ⚠️ Auto-creation of default config file (if none exists)
 
 ## Future Implementations
 
-- 🚧 Wayland support
 - 🚧 Configurable UI theme and appearance
 - 🚧 Blurred background option
 - 🚧 More interactive lock screen elements
