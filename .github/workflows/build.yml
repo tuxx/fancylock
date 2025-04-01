@@ -89,8 +89,8 @@ jobs:
           echo -e "Host aur.archlinux.org\n  IdentityFile ~/.ssh/aur\n  StrictHostKeyChecking no" >> ~/.ssh/config
 
           cd packages/aur/fancylock-bin
-          git init
-          git remote add origin ssh://aur@aur.archlinux.org/fancylock-bin.git
+          git clone ssh://aur@aur.archlinux.org/fancylock-bin.git aur-upstream
+          cp -r aur-upstream/.git ./
           git add .
           git config user.email "aur@fancylock"
           git config user.name "FancyLock Bot"
