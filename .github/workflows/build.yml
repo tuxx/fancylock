@@ -91,11 +91,13 @@ jobs:
           cd packages/aur/fancylock-bin
           git clone ssh://aur@aur.archlinux.org/fancylock-bin.git aur-upstream
           cp -r aur-upstream/.git ./
-          git add .
+
+          makepkg --printsrcinfo > .SRCINFO
+          git add PKGBUILD .SRCINFO
           git config user.email "aur@fancylock"
           git config user.name "FancyLock Bot"
           git commit -m "Release ${{ github.ref_name }}"
-          git push -f origin master
+          git push origin master
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
 
