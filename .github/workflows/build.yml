@@ -91,12 +91,15 @@ jobs:
           cd packages/aur/fancylock-bin
           git clone ssh://aur@aur.archlinux.org/fancylock-bin.git aur-upstream
           cp -r aur-upstream/.git ./
-
-          sed "s/@VERSION@/${{ github.ref_name#v }}/g" .SRCINFO.template > .SRCINFO
+          rm -rf aur-upstream
+          VERSION="${GITHUB_REF##*/}"
+          VERSION="${VERSION#v}"
+          sed "s/@VERSION@/$VERSION/g" PKGBUILD.template > PKGBUILD
+          sed "s/@VERSION@/$VERSION/g" .SRCINFO.template > .SRCINFO
           git add PKGBUILD .SRCINFO
           git config user.email "aur@fancylock"
           git config user.name "FancyLock Bot"
-          git commit -m "Release ${{ github.ref_name }}"
+          git commit -m "Release v$VERSION"
           git push origin master
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
