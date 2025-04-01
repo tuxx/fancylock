@@ -92,7 +92,7 @@ jobs:
           git clone ssh://aur@aur.archlinux.org/fancylock-bin.git aur-upstream
           cp -r aur-upstream/.git ./
 
-          makepkg --printsrcinfo > .SRCINFO
+          sed "s/@VERSION@/${{ github.ref_name#v }}/g" .SRCINFO.template > .SRCINFO
           git add PKGBUILD .SRCINFO
           git config user.email "aur@fancylock"
           git config user.name "FancyLock Bot"
