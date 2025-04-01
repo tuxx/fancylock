@@ -59,7 +59,19 @@ EOF
 ```
 </details>
 
-### Option 2: Build from source
+### Option 2: Install via AUR (Arch Linux)
+
+<details>
+<summary>Download and install the latest pre-built binary:</summary>
+
+```bash
+yay -S fancylock-bin
+```
+</details>
+
+This installs the latest precompiled release from GitHub.
+
+### Option 3: Build from source
 
 #### Prerequisites
 
