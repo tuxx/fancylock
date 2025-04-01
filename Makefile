@@ -50,3 +50,22 @@ install: native
 
 clean:
 	rm -rf $(BIN) $(DIST)
+
+BINARY=fancylock-linux-amd64
+DIST_DIR=dist
+TAG_VERSION=$(shell git describe --tags --abbrev=0 | sed 's/^v//')
+
+amd64:
+	mkdir -p bin
+	GOARCH=amd64 GOOS=linux go build -o bin/$(BINARY) -ldflags="-X 'github.com/tuxx/fancylock/internal.Version=$(TAG_VERSION)'"
+
+package: amd64
+	mkdir -p $(DIST_DIR)
+	cp bin/$(BINARY) $(DIST_DIR)/
+	tar -C $(DIST_DIR) -czf $(DIST_DIR)/$(BINARY).tar.gz $(BINARY)
+
+aur: package
+	mkdir -p packages/aur/fancylock-bin
+	sed "s/@VERSION@/$(TAG_VERSION)/g" packages/aur/fancylock-bin/PKGBUILD.template > packages/aur/fancylock-bin/PKGBUILD
+	sed "s/@VERSION@/$(TAG_VERSION)/g" packages/aur/fancylock-bin/.SRCINFO.template > packages/aur/fancylock-bin/.SRCINFO
+

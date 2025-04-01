@@ -29,6 +29,7 @@ jobs:
         run: |
           make amd64
           make package
+          make aur
           echo "build_success=true" >> $GITHUB_OUTPUT
         continue-on-error: true
 
@@ -79,4 +80,22 @@ jobs:
           files: dist/*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push to AUR
+        run: |
+          mkdir -p ~/.ssh
+          echo "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          echo -e "Host aur.archlinux.org\n  IdentityFile ~/.ssh/aur\n  StrictHostKeyChecking no" >> ~/.ssh/config
+
+          cd packages/aur/fancylock-bin
+          git init
+          git remote add origin ssh://aur@aur.archlinux.org/fancylock-bin.git
+          git add .
+          git config user.email "aur@fancylock"
+          git config user.name "FancyLock Bot"
+          git commit -m "Release ${{ github.ref_name }}"
+          git push -f origin master
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
 
