@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/xgb"
 	"github.com/BurntSushi/xgb/dpms"
+	"github.com/BurntSushi/xgb/randr"
 	"github.com/BurntSushi/xgb/screensaver"
 	"github.com/BurntSushi/xgb/xfixes"
 	"github.com/BurntSushi/xgb/xproto"
@@ -154,83 +154,73 @@ func (l *X11Locker) Init() error {
 	return nil
 }
 
-// detectMonitors detects connected monitors
+// detectMonitors detects connected monitors using XRandR extension
 func (l *X11Locker) detectMonitors() ([]Monitor, error) {
-	Info("Attempting to detect monitors using xrandr")
-	// Try to use xrandr to get monitor information
-	cmd := exec.Command("xrandr", "--current")
-	Debug("Executing command: %s %s", cmd.Path, strings.Join(cmd.Args, " "))
+	Info("Detecting monitors using native XRandR extension")
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		Error("Failed to run xrandr: %v, output: %s", err, string(output))
-		return nil, fmt.Errorf("failed to run xrandr: %v", err)
+	// Initialize the RandR extension
+	if err := randr.Init(l.conn); err != nil {
+		Error("Failed to initialize RandR extension: %v", err)
+		return nil, fmt.Errorf("failed to initialize RandR extension: %v", err)
 	}
 
-	// Log the full xrandr output for debugging
-	Debug("xrandr output:\n%s", string(output))
+	// Get the X screen resources
+	root := l.screen.Root
+	resources, err := randr.GetScreenResources(l.conn, root).Reply()
+	if err != nil {
+		Error("Failed to get screen resources: %v", err)
+		return nil, fmt.Errorf("failed to get screen resources: %v", err)
+	}
 
-	// Parse xrandr output
 	monitors := []Monitor{}
-	lines := strings.Split(string(output), "\n")
-	Info("Found %d lines in xrandr output", len(lines))
 
-	for i, line := range lines {
-		Debug("Processing line %d: %s", i, line)
-		// Look for connected monitors with resolutions
-		if strings.Contains(line, " connected") && strings.Contains(line, "x") {
-			Debug("Found connected monitor line: %s", line)
-			// Extract monitor position and size
-			posInfo := line[strings.Index(line, "connected")+10:]
-			posInfo = strings.TrimSpace(posInfo)
-			Debug("Position info extracted: %s", posInfo)
-
-			// Primary monitor might have "primary" keyword before resolution
-			if strings.HasPrefix(posInfo, "primary ") {
-				Debug("Detected primary monitor")
-				posInfo = posInfo[8:]
-				Debug("After removing 'primary' prefix: %s", posInfo)
-			}
-
-			var x, y, width, height int
-
-			// Parse monitor position and size
-			if strings.Contains(posInfo, "+") {
-				Debug("Parsing position info: %s", posInfo)
-				// Format might be like "1920x1080+0+0" or "1080x1920+1920+0"
-				parts := strings.Split(posInfo, "+")
-				if len(parts) >= 3 {
-					Debug("Split into parts: %v", parts)
-					resolution := strings.Split(parts[0], "x")
-					if len(resolution) >= 2 {
-						width, _ = strconv.Atoi(resolution[0])
-						height, _ = strconv.Atoi(resolution[1])
-						x, _ = strconv.Atoi(parts[1])
-						y, _ = strconv.Atoi(parts[2])
-
-						Debug("Parsed monitor: width=%d, height=%d, x=%d, y=%d", width, height, x, y)
-						monitors = append(monitors, Monitor{
-							X:      x,
-							Y:      y,
-							Width:  width,
-							Height: height,
-						})
-						Info("Added monitor: width=%d, height=%d, x=%d, y=%d", width, height, x, y)
-					} else {
-						Debug("Failed to parse resolution part: %s", parts[0])
-					}
-				} else {
-					Debug("Not enough parts after splitting by '+': %v", parts)
-				}
-			} else {
-				Debug("No '+' found in position info: %s", posInfo)
-			}
+	// Iterate through all outputs (monitors)
+	for _, output := range resources.Outputs {
+		// Get output info
+		outputInfo, err := randr.GetOutputInfo(l.conn, output, 0).Reply()
+		if err != nil {
+			Warn("Failed to get output info: %v", err)
+			continue
 		}
+
+		// Skip disconnected outputs
+		if outputInfo.Connection != randr.ConnectionConnected {
+			Debug("Skipping disconnected output %d", output)
+			continue
+		}
+
+		// Skip outputs without CRTC (not actively used)
+		if outputInfo.Crtc == 0 {
+			Debug("Skipping output without CRTC %d", output)
+			continue
+		}
+
+		// Get CRTC info to determine position and dimensions
+		crtcInfo, err := randr.GetCrtcInfo(l.conn, outputInfo.Crtc, 0).Reply()
+		if err != nil {
+			Warn("Failed to get CRTC info: %v", err)
+			continue
+		}
+
+		Debug("Found connected monitor: x=%d, y=%d, width=%d, height=%d",
+			crtcInfo.X, crtcInfo.Y, crtcInfo.Width, crtcInfo.Height)
+
+		// Add to the list of monitors
+		monitors = append(monitors, Monitor{
+			X:      int(crtcInfo.X),
+			Y:      int(crtcInfo.Y),
+			Width:  int(crtcInfo.Width),
+			Height: int(crtcInfo.Height),
+		})
+
+		Info("Added monitor: width=%d, height=%d, x=%d, y=%d",
+			crtcInfo.Width, crtcInfo.Height, crtcInfo.X, crtcInfo.Y)
 	}
 
 	// If no monitors detected, fall back to single monitor
 	if len(monitors) == 0 {
-		Info("No monitors detected via xrandr, falling back to single monitor with dimensions %dx%d", int(l.width), int(l.height))
+		Info("No monitors detected via XRandR, falling back to single monitor with dimensions %dx%d",
+			int(l.width), int(l.height))
 		monitors = append(monitors, Monitor{
 			X:      0,
 			Y:      0,
