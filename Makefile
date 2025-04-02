@@ -1,5 +1,5 @@
 APP := fancylock
-ARCHES := amd64 arm64 arm
+ARCHES := amd64
 BIN := bin
 DIST := dist
 INSTALL_PATH := /usr/local/bin
