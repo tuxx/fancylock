@@ -34,6 +34,9 @@ tar -xzvf fancylock.tar.gz
 # Make it executable
 chmod +x fancylock-linux-amd64
 
+# Add a pam.d file for fancylock:
+sudo curl -L -o /etc/pam.d/fancylock https://raw.githubusercontent.com/tuxx/fancylock/refs/heads/master/pam.d/fancylock
+
 # Optional: install system-wide
 sudo mv fancylock-linux-amd64 /usr/local/bin/fancylock
 
@@ -46,7 +49,7 @@ cat > ~/.config/fancylock/config.json << 'EOF'
   "media_dir": "$HOME/Videos",
   "lock_screen": false,
   "supported_extensions": [".mp4", ".mkv", ".mov", ".avi", ".webm"],
-  "pam_service": "system-auth",
+  "pam_service": "fancylock",
   "include_images": true,
   "image_display_time": 30,
   "background_color": "#000000",
@@ -181,7 +184,7 @@ fancylock -c /path/to/config.json
   "media_dir": "/home/user/Videos",
   "lock_screen": false,
   "supported_extensions": [".mp4", ".mkv", ".mov", ".avi", ".webm"],
-  "pam_service": "system-auth",
+  "pam_service": "fancylock",
   "include_images": true,
   "image_display_time": 30,
   "background_color": "#000000",

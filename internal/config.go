@@ -14,12 +14,18 @@ func DefaultConfig() Configuration {
 		homeDir = "/tmp"
 	}
 
+	pamPath := "/etc/pam.d/fancylock"
+	PamService := "system-auth"
+	if _, err := os.Stat(pamPath); err == nil {
+		PamService = "fancylock"
+	}
+
 	return Configuration{
 		MediaDir:         filepath.Join(homeDir, "Videos"),
 		LockScreen:       false,
 		SupportedExt:     []string{".mov", ".mkv", ".mp4", ".avi", ".webm"},
 		IdleTimeout:      300, // 5 minutes
-		PamService:       "system-auth",
+		PamService:       PamService,
 		IncludeImages:    true,
 		ImageDisplayTime: 30,
 		BackgroundColor:  "#000000",

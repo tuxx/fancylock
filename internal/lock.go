@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"strings"
 	"syscall"
 
 	"github.com/msteinert/pam"
@@ -20,14 +21,8 @@ func NewPamAuthenticator(config Configuration) *PamAuthenticator {
 		username = currentUser.Username
 	}
 
-	// Use default PAM service from config
-	serviceName := config.PamService
-	if serviceName == "" {
-		serviceName = "system-auth"
-	}
-
 	return &PamAuthenticator{
-		serviceName: serviceName,
+		serviceName: config.PamService,
 		username:    username,
 	}
 }
@@ -92,52 +87,40 @@ func (a *PamAuthenticator) Authenticate(password string) AuthResult {
 	}
 }
 
-// LockHelper provides common functionality for screen lockers
 type LockHelper struct {
-	config        Configuration
 	authenticator *PamAuthenticator
+	config        Configuration
 }
 
-// NewLockHelper creates a new lock helper
+// NewLockHelper creates a new helper instance with the given configuration
 func NewLockHelper(config Configuration) *LockHelper {
+	auth := &PamAuthenticator{
+		serviceName: config.PamService,
+		username:    os.Getenv("USER"),
+	}
+
 	return &LockHelper{
+		authenticator: auth,
 		config:        config,
-		authenticator: NewPamAuthenticator(config),
 	}
 }
 
-// RunPreLockCommand executes the configured pre-lock command
+// RunPreLockCommand runs the configured pre-lock command (if any)
 func (h *LockHelper) RunPreLockCommand() error {
 	if h.config.PreLockCommand == "" {
-		return nil // No command to run
+		return nil
 	}
-
-	Info("Running pre-lock command: %s", h.config.PreLockCommand)
-	output, err := h.RunCommand("sh", "-c", h.config.PreLockCommand)
-	if err != nil {
-		Error("Pre-lock command failed: %v - %s", err, output)
-		return fmt.Errorf("pre-lock command failed: %v", err)
-	}
-
-	Debug("Pre-lock command output: %s", output)
-	return nil
+	Debug("Running pre-lock command: %s", h.config.PreLockCommand)
+	return runShellCommand(h.config.PreLockCommand)
 }
 
-// RunPostLockCommand executes the configured post-lock command
+// RunPostLockCommand runs the configured post-lock command (if any)
 func (h *LockHelper) RunPostLockCommand() error {
 	if h.config.PostLockCommand == "" {
-		return nil // No command to run
+		return nil
 	}
-
-	Info("Running post-lock command: %s", h.config.PostLockCommand)
-	output, err := h.RunCommand("sh", "-c", h.config.PostLockCommand)
-	if err != nil {
-		Error("Post-lock command failed: %v - %s", err, output)
-		return fmt.Errorf("post-lock command failed: %v", err)
-	}
-
-	Debug("Post-lock command output: %s", output)
-	return nil
+	Debug("Running post-lock command: %s", h.config.PostLockCommand)
+	return runShellCommand(h.config.PostLockCommand)
 }
 
 // CheckUserPermissions verifies that the user has the necessary permissions
@@ -277,4 +260,9 @@ func (p *SecurePassword) Length() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.data)
+}
+
+// runShellCommand executes a shell command string
+func runShellCommand(cmd string) error {
+	return exec.Command("sh", "-c", strings.TrimSpace(cmd)).Run()
 }
