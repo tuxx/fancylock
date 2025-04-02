@@ -39,7 +39,6 @@ vendor/
 .env.production
 
 # Build files
-fancylock
 build/
 
 # Log files
