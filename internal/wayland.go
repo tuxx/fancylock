@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,7 +29,7 @@ type WaylandLocker struct {
 	keyboard        *wl.Keyboard
 	seat            *wl.Seat
 	shm             *wl.Shm
-	passwordBuf     string
+	securePassword  *SecurePassword
 	surfaces        map[*wl.Output]struct {
 		wlSurface   *wl.Surface
 		lockSurface *ext.SessionLockSurface
@@ -45,6 +46,7 @@ type WaylandLocker struct {
 	lockoutUntil    time.Time
 	lockoutActive   bool
 	lastFailureTime time.Time
+	mu              sync.Mutex
 }
 
 var _ wl.KeyboardKeyHandler = (*WaylandLocker)(nil)
@@ -73,22 +75,24 @@ func (h *surfaceHandler) HandleSessionLockSurfaceConfigure(ev ext.SessionLockSur
 	// Create memory-backed file descriptor
 	fd, err := unix.MemfdCreate("buffer", unix.MFD_CLOEXEC)
 	if err != nil {
-		Info("Failed to create memfd: %v\n", err)
+		Error("Failed to create memfd: %v", err)
 		return
 	}
+	defer unix.Close(fd) // Ensure fd is closed on all exit paths
 
 	// Set the size of the file
 	if err = syscall.Ftruncate(fd, int64(size)); err != nil {
-		Info("Failed to truncate memfd: %v\n", err)
+		Error("Failed to truncate memfd: %v", err)
 		return
 	}
 
 	// Map the file into memory
 	data, err := syscall.Mmap(fd, 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if err != nil {
-		Info("Failed to mmap: %v\n", err)
+		Error("Failed to mmap: %v", err)
 		return
 	}
+	defer syscall.Munmap(data)
 
 	// Fill with black transparent color (RGBA format)
 	for i := 0; i < size; i += 4 {
@@ -100,14 +104,16 @@ func (h *surfaceHandler) HandleSessionLockSurfaceConfigure(ev ext.SessionLockSur
 
 	pool, err := h.client.shm.CreatePool(uintptr(fd), int32(size))
 	if err != nil {
-		Info("Failed to create pool: %v\n", err)
+		Error("Failed to create pool: %v", err)
 		return
 	}
 
 	// Create a buffer from the pool
 	buffer, err := pool.CreateBuffer(0, int32(ev.Width), int32(ev.Height), int32(stride), wl.ShmFormatArgb8888)
 	if err != nil {
-		Info("Failed to create buffer: %v\n", err)
+		Error("Failed to create buffer: %v", err)
+		// Explicitly destroy the pool as it's no longer needed if buffer creation fails
+		pool.Destroy()
 		return
 	}
 
@@ -140,6 +146,7 @@ func NewWaylandLocker(config Configuration) *WaylandLocker {
 		failedAttempts:  0,
 		lockoutActive:   false,
 		countdownActive: false,
+		securePassword:  NewSecurePassword(), // Initialize the new securePassword field
 	}
 }
 
@@ -168,20 +175,36 @@ func (l *WaylandLocker) HandleKeyboardModifiers(ev wl.KeyboardModifiersEvent) {
 		ev.ModsDepressed, ev.ModsLatched, ev.ModsLocked)
 }
 
-func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int) {
+func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int, offsetX int) {
 	width := uint32(3840)
 	height := uint32(2160)
 	stride := int(width) * 4
 	size := stride * int(height)
 
-	fd, _ := unix.MemfdCreate("pwfeedback", unix.MFD_CLOEXEC)
-	syscall.Ftruncate(fd, int64(size))
-	data, _ := syscall.Mmap(fd, 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	fd, err := unix.MemfdCreate("pwfeedback", unix.MFD_CLOEXEC)
+	if err != nil {
+		Error("Failed to create memory file descriptor: %v", err)
+		return
+	}
+	defer unix.Close(fd) // Ensure fd is always closed
+
+	err = syscall.Ftruncate(fd, int64(size))
+	if err != nil {
+		Error("Failed to truncate memory file: %v", err)
+		return
+	}
+
+	data, err := syscall.Mmap(fd, 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	if err != nil {
+		Error("Failed to map memory: %v", err)
+		return
+	}
+	defer syscall.Munmap(data) // Ensure memory mapping is cleaned up
 
 	// Dots centered horizontally, near bottom
 	dotSpacing := 20
 	totalWidth := count * dotSpacing
-	startX := (int(width) - totalWidth) / 2
+	startX := (int(width)-totalWidth)/2 + offsetX // Add horizontal offset here
 	y := int(height) - 100
 
 	for i := 0; i < count && i < 32; i++ {
@@ -201,8 +224,18 @@ func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int) {
 		}
 	}
 
-	pool, _ := l.shm.CreatePool(uintptr(fd), int32(size))
-	buffer, _ := pool.CreateBuffer(0, int32(width), int32(height), int32(stride), wl.ShmFormatArgb8888)
+	pool, err := l.shm.CreatePool(uintptr(fd), int32(size))
+	if err != nil {
+		Error("Failed to create shared memory pool: %v", err)
+		return
+	}
+
+	buffer, err := pool.CreateBuffer(0, int32(width), int32(height), int32(stride), wl.ShmFormatArgb8888)
+	if err != nil {
+		Error("Failed to create buffer: %v", err)
+		pool.Destroy()
+		return
+	}
 
 	surface.Attach(buffer, 0, 0)
 	surface.Damage(0, 0, int32(width), int32(height))
@@ -210,7 +243,58 @@ func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int) {
 	surface.Commit()
 }
 
+func (l *WaylandLocker) shakePasswordDots() {
+	Debug("Starting password shake animation")
+
+	// Number of shake iterations
+	iterations := 4
+	// Shake distance in pixels
+	distance := 10
+	// Time between movements in milliseconds
+	delay := 80 * time.Millisecond
+
+	// Get current dot count safely
+	dotCount := l.securePassword.Length()
+
+	// Perform the shake animation with horizontal movement
+	for i := 0; i < iterations; i++ {
+		// Move right
+		for _, entry := range l.surfaces {
+			if entry.wlSurface != nil {
+				drawPasswordFeedback(l, entry.wlSurface, dotCount, distance)
+			}
+		}
+		time.Sleep(delay)
+
+		// Move left
+		for _, entry := range l.surfaces {
+			if entry.wlSurface != nil {
+				drawPasswordFeedback(l, entry.wlSurface, dotCount, -distance)
+			}
+		}
+		time.Sleep(delay)
+
+		// Back to center
+		for _, entry := range l.surfaces {
+			if entry.wlSurface != nil {
+				drawPasswordFeedback(l, entry.wlSurface, dotCount, 0)
+			}
+		}
+		time.Sleep(delay)
+	}
+
+	// Final redraw with no dots
+	for _, entry := range l.surfaces {
+		if entry.wlSurface != nil {
+			drawPasswordFeedback(l, entry.wlSurface, 0, 0)
+		}
+	}
+}
+
 func (l *WaylandLocker) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	if ev.State != 1 {
 		return
 	}
@@ -234,7 +318,7 @@ func (l *WaylandLocker) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
 	switch ev.Key {
 	case 1: // Escape
 		Info("ESC pressed, clearing password\n")
-		l.passwordBuf = ""
+		l.securePassword.Clear()
 		charAdded = true
 		if l.config.DebugExit {
 			Info("Debug exit triggered by ESC key\n")
@@ -250,29 +334,27 @@ func (l *WaylandLocker) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
 		return
 	case 14: // Backspace
 		Info("BACKSPACE pressed, removing last character\n")
-		if len(l.passwordBuf) > 0 {
-			l.passwordBuf = l.passwordBuf[:len(l.passwordBuf)-1]
-			charAdded = true
-		}
+		l.securePassword.RemoveLast()
+		charAdded = true
 	default:
 		if ev.Key >= 2 && ev.Key <= 11 {
 			if ev.Key == 11 {
-				l.passwordBuf += "0"
+				l.securePassword.Append('0')
 			} else {
-				l.passwordBuf += string('1' + (ev.Key - 2))
+				l.securePassword.Append('1' + byte(ev.Key-2))
 			}
 			charAdded = true
 		} else if ev.Key >= 16 && ev.Key <= 25 {
-			chars := []rune{'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'}
-			l.passwordBuf += string(chars[ev.Key-16])
+			chars := []byte{'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'}
+			l.securePassword.Append(chars[ev.Key-16])
 			charAdded = true
 		} else if ev.Key >= 30 && ev.Key <= 38 {
-			chars := []rune{'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'}
-			l.passwordBuf += string(chars[ev.Key-30])
+			chars := []byte{'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'}
+			l.securePassword.Append(chars[ev.Key-30])
 			charAdded = true
 		} else if ev.Key >= 44 && ev.Key <= 50 {
-			chars := []rune{'z', 'x', 'c', 'v', 'b', 'n', 'm'}
-			l.passwordBuf += string(chars[ev.Key-44])
+			chars := []byte{'z', 'x', 'c', 'v', 'b', 'n', 'm'}
+			l.securePassword.Append(chars[ev.Key-44])
 			charAdded = true
 		} else {
 			Info("Unhandled key: %d\n", ev.Key)
@@ -281,7 +363,7 @@ func (l *WaylandLocker) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
 
 	if charAdded {
 		select {
-		case l.redrawCh <- len(l.passwordBuf):
+		case l.redrawCh <- l.securePassword.Length():
 		default:
 		}
 	}
@@ -691,7 +773,7 @@ func (l *WaylandLocker) Lock() error {
 			}
 			redrawTimer = time.AfterFunc(50*time.Millisecond, func() {
 				for _, entry := range l.surfaces {
-					drawPasswordFeedback(l, entry.wlSurface, length)
+					drawPasswordFeedback(l, entry.wlSurface, length, 0)
 				}
 			})
 		}
@@ -733,7 +815,7 @@ func (l *WaylandLocker) authenticate() {
 		// Still in lockout period, don't even attempt authentication
 		remainingTime := time.Until(l.lockoutUntil).Round(time.Second)
 		Info("Authentication locked out for another %v", remainingTime)
-		l.passwordBuf = ""
+		l.securePassword.Clear()
 		return
 	}
 
@@ -748,7 +830,8 @@ func (l *WaylandLocker) authenticate() {
 		Debug("Created lock helper for PAM auth")
 	}
 
-	result := l.helper.authenticator.Authenticate(l.passwordBuf)
+	password := l.securePassword.String()
+	result := l.helper.authenticator.Authenticate(password)
 	Debug("PAM result: success=%v message=%s", result.Success, result.Message)
 
 	if result.Success {
@@ -833,9 +916,11 @@ func (l *WaylandLocker) authenticate() {
 			Debug("String contains 'account is locked'")
 			l.StartCountdown("Account locked", 300)
 		}
+
+		l.shakePasswordDots()
 	}
 
-	l.passwordBuf = ""
+	l.securePassword.Clear()
 
 	select {
 	case l.redrawCh <- 0: // Send 0 to indicate no dots

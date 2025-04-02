@@ -149,27 +149,10 @@ type PamAuthenticator struct {
 	username    string
 }
 
-// WaylandLocker implements the ScreenLocker interface for Wayland (Hyprland)
-//type WaylandLocker struct {
-//	config          Configuration
-//	helper          *LockHelper
-//	mediaPlayer     *MediaPlayer
-//	passwordBuf     string
-//	isLocked        bool
-//	passwordDots    []bool // true for filled, false for empty
-//	maxDots         int
-//	idleWatcher     *WaylandIdleWatcher
-//	failedAttempts  int             // Count of failed authentication attempts
-//	lockoutUntil    time.Time       // Time until which input is locked out
-//	lockoutActive   bool            // Whether a lockout is currently active
-//	timerRunning    bool            // Track if the countdown timer is already running
-//	lastFailureTime time.Time       // Time of the last failed attempt
-//	monitors        []Monitor       // Detected monitors
-//
-//	// Wayland display/window management
-//	display          *WaylandDisplay
-//	window           *WaylandWindow
-//}
+type SecurePassword struct {
+	data []byte
+	mu   sync.Mutex
+}
 
 // WaylandDisplay handles the Wayland display connection
 type WaylandDisplay struct {

@@ -227,3 +227,54 @@ func (h *LockHelper) RunCommand(command string, args ...string) (string, error) 
 	}
 	return string(output), nil
 }
+
+// NewSecurePassword creates a new secure password container
+func NewSecurePassword() *SecurePassword {
+	return &SecurePassword{
+		data: make([]byte, 0, 64),
+	}
+}
+
+// Append adds a character to the password
+func (p *SecurePassword) Append(char byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.data = append(p.data, char)
+}
+
+// RemoveLast removes the last character from the password
+func (p *SecurePassword) RemoveLast() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.data) > 0 {
+		// Zero out the last byte before removing it
+		p.data[len(p.data)-1] = 0
+		p.data = p.data[:len(p.data)-1]
+	}
+}
+
+// Clear securely wipes the password data
+func (p *SecurePassword) Clear() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Zero out the memory before resetting
+	for i := range p.data {
+		p.data[i] = 0
+	}
+	p.data = p.data[:0]
+}
+
+// String returns the password as a string (use carefully)
+func (p *SecurePassword) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Create a temporary string for authentication
+	return string(p.data)
+}
+
+// Length returns the password length
+func (p *SecurePassword) Length() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.data)
+}
