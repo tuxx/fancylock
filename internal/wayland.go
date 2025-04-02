@@ -1,6 +1,7 @@
 package internal
 
 import (
+	_ "embed"
 	"fmt"
 	"image"
 	"image/color"
@@ -10,7 +11,7 @@ import (
 	"time"
 
 	"golang.org/x/image/font"
-	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 
 	"github.com/neurlang/wayland/wl"
@@ -18,6 +19,9 @@ import (
 	ext "github.com/tuxx/wayland-ext-session-lock-go"
 	"golang.org/x/sys/unix"
 )
+
+//go:embed fonts/DejaVuSans-Bold.ttf
+var fontBytes []byte
 
 type WaylandLocker struct {
 	display         *wl.Display
@@ -201,24 +205,29 @@ func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int, offs
 	}
 	defer syscall.Munmap(data) // Ensure memory mapping is cleaned up
 
-	// Dots centered horizontally, near bottom
-	dotSpacing := 20
+	// Much larger dots
+	dotSpacing := 40 // Increased spacing for larger dots
+	dotRadius := 12  // 4x the original size (was 3)
 	totalWidth := count * dotSpacing
-	startX := (int(width)-totalWidth)/2 + offsetX // Add horizontal offset here
+	startX := (int(width)-totalWidth)/2 + offsetX
 	y := int(height) - 100
 
 	for i := 0; i < count && i < 32; i++ {
 		x := startX + i*dotSpacing
-		for dy := -3; dy <= 3; dy++ {
-			for dx := -3; dx <= 3; dx++ {
-				px := x + dx
-				py := y + dy
-				if px >= 0 && py >= 0 && px < int(width) && py < int(height) {
-					offset := (py*int(width) + px) * 4
-					data[offset+0] = 0xff
-					data[offset+1] = 0xff
-					data[offset+2] = 0xff
-					data[offset+3] = 0xff
+		// Draw larger circular dots
+		for dy := -dotRadius; dy <= dotRadius; dy++ {
+			for dx := -dotRadius; dx <= dotRadius; dx++ {
+				// Make sure we're within the circle
+				if dx*dx+dy*dy <= dotRadius*dotRadius {
+					px := x + dx
+					py := y + dy
+					if px >= 0 && py >= 0 && px < int(width) && py < int(height) {
+						offset := (py*int(width) + px) * 4
+						data[offset+0] = 0xff // Blue
+						data[offset+1] = 0xff // Green
+						data[offset+2] = 0xff // Red
+						data[offset+3] = 0xff // Alpha
+					}
 				}
 			}
 		}
@@ -928,47 +937,6 @@ func (l *WaylandLocker) authenticate() {
 	}
 }
 
-func drawCenteredMessage(surface *wl.Surface, l *WaylandLocker, width, height int, message string, secondsLeft int) {
-	stride := width * 4
-	size := stride * height
-
-	fd, _ := unix.MemfdCreate("msgbuffer", unix.MFD_CLOEXEC)
-	syscall.Ftruncate(fd, int64(size))
-	data, _ := syscall.Mmap(fd, 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-
-	msg := fmt.Sprintf("%s (%ds)", message, secondsLeft)
-	x := (width - len(msg)*9) / 2
-	y := (height / 2) - 5
-
-	for i := range msg {
-		drawChar(data, width, height, x+i*9, y)
-
-	}
-
-	pool, _ := l.shm.CreatePool(uintptr(fd), int32(size))
-	buffer, _ := pool.CreateBuffer(0, int32(width), int32(height), int32(stride), wl.ShmFormatArgb8888)
-	surface.Attach(buffer, 0, 0)
-	surface.Damage(0, 0, int32(width), int32(height))
-	surface.Commit()
-}
-
-func drawChar(data []byte, width, height, x, y int) {
-	for dy := 0; dy < 10; dy++ {
-		for dx := 0; dx < 8; dx++ {
-			px := x + dx
-			py := y + dy
-			if px < 0 || py < 0 || px >= width || py >= height {
-				continue
-			}
-			offset := (py*width + px) * 4
-			data[offset+0] = 0xff
-			data[offset+1] = 0xff
-			data[offset+2] = 0xff
-			data[offset+3] = 0xff
-		}
-	}
-}
-
 func (l *WaylandLocker) StartCountdown(message string, duration int) {
 	Debug(">>> Starting countdown: %s (%ds)", message, duration)
 
@@ -1114,39 +1082,58 @@ func safeCenteredMessage(surface *wl.Surface, l *WaylandLocker, message string, 
 		}
 	}
 
-	// Create the message
-	completeMessage := fmt.Sprintf("%s (%ds)", message, secondsLeft)
+	// Format time in mm:ss format
+	minutes := secondsLeft / 60
+	seconds := secondsLeft % 60
+	timeStr := fmt.Sprintf("%02d:%02d", minutes, seconds)
 
 	// Create RGBA image
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 
-	// Draw transparent background
+	// Draw semi-transparent black background
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
-			img.SetRGBA(x, y, color.RGBA{0, 0, 0, 128}) // Semi-transparent black
+			img.SetRGBA(x, y, color.RGBA{0, 0, 0, 200}) // More opaque black
 		}
 	}
 
-	// Create font drawer
+	// Draw "LOCKED" message at the center
+	lockedMsg := "LOCKED"
+
+	// Create a font drawer for basic text
+	ttf, err := opentype.Parse(fontBytes)
+	if err != nil {
+		Error("Failed to parse embedded TTF font: %v", err)
+		return
+	}
+
+	face, err := opentype.NewFace(ttf, &opentype.FaceOptions{
+		Size:    96, // Big font size
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	if err != nil {
+		Error("Failed to create font face: %v", err)
+		return
+	}
+	defer face.Close()
+
+	lockedX := (width - font.MeasureString(face, lockedMsg).Round()) / 2
+	lockedY := height/2 - 50
+
 	d := &font.Drawer{
 		Dst:  img,
 		Src:  image.White,
-		Face: basicfont.Face7x13,
+		Face: face,
+		Dot:  fixed.P(lockedX, lockedY),
 	}
+	d.DrawString(lockedMsg)
 
-	// Calculate text position (centered)
-	textWidth := font.MeasureString(d.Face, completeMessage).Round()
-	textX := (width - textWidth) / 2
-	textY := height / 2
-
-	// Set position
-	d.Dot = fixed.Point26_6{
-		X: fixed.I(textX),
-		Y: fixed.I(textY),
-	}
-
-	// Draw text
-	d.DrawString(completeMessage)
+	// Timer below
+	timerX := (width - font.MeasureString(face, timeStr).Round()) / 2
+	timerY := height/2 + 50
+	d.Dot = fixed.P(timerX, timerY)
+	d.DrawString(timeStr)
 
 	// Convert the image to a byte slice for Wayland
 	stride := width * 4
@@ -1184,7 +1171,7 @@ func safeCenteredMessage(surface *wl.Surface, l *WaylandLocker, message string, 
 		}
 	}
 
-	// Create shared memory pool
+	// Create shared memory pool and rest of the function remains unchanged
 	pool, err := l.shm.CreatePool(uintptr(fd), int32(size))
 	if err != nil {
 		Error("Failed to create pool for message: %v", err)
@@ -1195,6 +1182,7 @@ func safeCenteredMessage(surface *wl.Surface, l *WaylandLocker, message string, 
 	buffer, err := pool.CreateBuffer(0, int32(width), int32(height), int32(stride), wl.ShmFormatArgb8888)
 	if err != nil {
 		Error("Failed to create buffer for message: %v", err)
+		pool.Destroy()
 		return
 	}
 
@@ -1202,50 +1190,4 @@ func safeCenteredMessage(surface *wl.Surface, l *WaylandLocker, message string, 
 	surface.Attach(buffer, 0, 0)
 	surface.Damage(0, 0, int32(width), int32(height))
 	surface.Commit()
-}
-
-func drawClearMessage(surface *wl.Surface, l *WaylandLocker, width, height int) {
-	stride := width * 4
-	size := stride * height
-
-	fd, err := unix.MemfdCreate("clearbuffer", unix.MFD_CLOEXEC)
-	if err != nil {
-		Error("Failed to create memfd for clear message: %v", err)
-		return
-	}
-
-	err = syscall.Ftruncate(fd, int64(size))
-	if err != nil {
-		Error("Failed to truncate memfd for clear message: %v", err)
-		return
-	}
-
-	data, err := syscall.Mmap(fd, 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	if err != nil {
-		Error("Failed to mmap for clear message: %v", err)
-		return
-	}
-
-	// Fill with transparent pixels
-	for i := 0; i < size; i += 4 {
-		data[i+3] = 0 // Fully transparent alpha
-	}
-
-	pool, err := l.shm.CreatePool(uintptr(fd), int32(size))
-	if err != nil {
-		Error("Failed to create pool for clear message: %v", err)
-		return
-	}
-
-	buffer, err := pool.CreateBuffer(0, int32(width), int32(height), int32(stride), wl.ShmFormatArgb8888)
-	if err != nil {
-		Error("Failed to create buffer for clear message: %v", err)
-		return
-	}
-
-	surface.Attach(buffer, 0, 0)
-	surface.Damage(0, 0, int32(width), int32(height))
-	surface.Commit()
-
-	Debug("Cleared message from surface")
 }

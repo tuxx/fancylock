@@ -13,4 +13,5 @@ require (
 require (
 	github.com/yalue/native_endian v1.0.2 // indirect
 	golang.org/x/image v0.25.0 // indirect
+	golang.org/x/text v0.23.0 // indirect
 )
