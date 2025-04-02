@@ -780,7 +780,14 @@ func (l *WaylandLocker) authenticate() {
 			if err := l.helper.RunPostLockCommand(); err != nil {
 				Warn("Post-lock command error: %v", err)
 			} else {
-				Info("Post-lock command executed successfully")
+				if l.config.PostLockCommand == "" {
+					// Add a small delay when no post-lock command is specified
+					// to ensure proper cleanup of Wayland resources
+					Debug("No post-lock command specified, adding small delay for cleanup")
+					time.Sleep(200 * time.Millisecond)
+				} else {
+					Info("Post-lock command executed successfully")
+				}
 			}
 
 			Debug("Signaling completion")
