@@ -75,15 +75,16 @@ type MediaFile struct {
 
 // MediaPlayer handles playing media files on the lockscreen
 type MediaPlayer struct {
-	config       Configuration
-	mediaFiles   []MediaFile
-	currentProcs []*exec.Cmd
-	currentProc  *exec.Cmd // Added this field to fix errors
-	stopChan     chan struct{}
-	doneChan     chan bool
-	mutex        sync.Mutex
-	running      bool
-	monitors     []Monitor
+	config           Configuration
+	mediaFiles       []MediaFile
+	currentProcs     []*exec.Cmd
+	currentProc      *exec.Cmd
+	stopChan         chan struct{}
+	doneChan         chan bool
+	mutex            sync.Mutex
+	running          bool
+	monitors         []Monitor
+	currentlyPlaying map[int]string
 }
 
 // Configuration holds the application settings

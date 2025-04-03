@@ -1,8 +1,10 @@
 package internal
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,14 +17,15 @@ import (
 // NewMediaPlayer creates a new media player instance
 func NewMediaPlayer(config Configuration) *MediaPlayer {
 	return &MediaPlayer{
-		config:       config,
-		stopChan:     make(chan struct{}),
-		doneChan:     make(chan bool, 1),
-		mediaFiles:   []MediaFile{},
-		currentProcs: []*exec.Cmd{},
-		currentProc:  nil, // Initialize the new field
-		running:      false,
-		monitors:     []Monitor{},
+		config:           config,
+		stopChan:         make(chan struct{}),
+		doneChan:         make(chan bool, 1),
+		mediaFiles:       []MediaFile{},
+		currentProcs:     []*exec.Cmd{},
+		currentProc:      nil,
+		running:          false,
+		monitors:         []Monitor{},
+		currentlyPlaying: make(map[int]string),
 	}
 }
 
@@ -106,14 +109,59 @@ func (mp *MediaPlayer) startPlaylistOnMonitor(monitor Monitor, monitorIdx int) e
 	}
 	defer playlistFile.Close()
 
-	// Get a shuffled copy of media files
-	shuffledMedia := make([]MediaFile, len(mp.mediaFiles))
-	copy(shuffledMedia, mp.mediaFiles)
+	// Get a copy of media files
+	availableMedia := make([]MediaFile, 0, len(mp.mediaFiles))
+
+	// Lock to safely access currentlyPlaying
+	mp.mutex.Lock()
+
+	// Filter out media files that are currently playing on other monitors
+	for _, media := range mp.mediaFiles {
+		isPlaying := false
+		for idx, path := range mp.currentlyPlaying {
+			if idx != monitorIdx && path == media.Path {
+				isPlaying = true
+				break
+			}
+		}
+		if !isPlaying {
+			availableMedia = append(availableMedia, media)
+		}
+	}
+
+	// If we filtered out too many files, add some back to ensure we have enough
+	// (This ensures we always have at least half of our media files available)
+	minRequired := len(mp.mediaFiles) / 2
+	if len(availableMedia) < minRequired && len(mp.mediaFiles) > 0 {
+		Info("Not enough unique media files available for monitor %d, adding some back", monitorIdx)
+		// Add files back until we reach the minimum
+		for _, media := range mp.mediaFiles {
+			alreadyAdded := false
+			for _, added := range availableMedia {
+				if added.Path == media.Path {
+					alreadyAdded = true
+					break
+				}
+			}
+			if !alreadyAdded {
+				availableMedia = append(availableMedia, media)
+				if len(availableMedia) >= minRequired {
+					break
+				}
+			}
+		}
+	}
+
+	mp.mutex.Unlock()
+
+	// Shuffle the available media
+	shuffledMedia := make([]MediaFile, len(availableMedia))
+	copy(shuffledMedia, availableMedia)
 	rand.Shuffle(len(shuffledMedia), func(i, j int) {
 		shuffledMedia[i], shuffledMedia[j] = shuffledMedia[j], shuffledMedia[i]
 	})
 
-	// Write all files to the playlist
+	// Write files to the playlist
 	for _, media := range shuffledMedia {
 		_, err = playlistFile.WriteString(media.Path + "\n")
 		if err != nil {
@@ -136,6 +184,11 @@ func (mp *MediaPlayer) startPlaylistOnMonitor(monitor Monitor, monitorIdx int) e
 		playerCmd = "mpv"
 	}
 
+	// Add a new option to get mpv to report the current file
+	// This will help us track what's playing on each monitor
+	ipcSocketPath := fmt.Sprintf("/tmp/fancylock-mpv-socket-%d", monitorIdx)
+	os.Remove(ipcSocketPath) // Remove any existing socket
+
 	cmd := exec.Command(playerCmd,
 		"--no-input-default-bindings", // Disable default key bindings
 		"--really-quiet",              // No console output
@@ -154,8 +207,9 @@ func (mp *MediaPlayer) startPlaylistOnMonitor(monitor Monitor, monitorIdx int) e
 		"--hwdec=auto",                          // Hardware acceleration
 		"--geometry="+geometry,                  // Position on correct monitor
 		"--autofit="+fmt.Sprintf("%dx%d", monitor.Width, monitor.Height), // Fit to monitor size
-		"--force-window=yes",              // Always create a window
-		"--playlist="+playlistFile.Name(), // Use the playlist file
+		"--force-window=yes",                // Always create a window
+		"--playlist="+playlistFile.Name(),   // Use the playlist file
+		"--input-ipc-server="+ipcSocketPath, // IPC socket for controlling mpv
 	)
 
 	// Set process group for easier termination
@@ -172,20 +226,59 @@ func (mp *MediaPlayer) startPlaylistOnMonitor(monitor Monitor, monitorIdx int) e
 	mp.mutex.Lock()
 	// Add to our list of running processes
 	mp.currentProcs = append(mp.currentProcs, cmd)
+	// Initialize with empty string - we'll update this when we know what's playing
+	mp.currentlyPlaying[monitorIdx] = ""
 	mp.mutex.Unlock()
 
 	Info("Started playlist playback on monitor %d with %d files", monitorIdx, len(shuffledMedia))
 
-	// Start a goroutine to clean up the temp file when mpv exits
+	// Start a goroutine to monitor what's playing and clean up when done
 	go func() {
+		// Wait a moment for mpv to start
+		time.Sleep(500 * time.Millisecond)
+
+		// Start a goroutine to periodically check what's playing
+		stopCheck := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-stopCheck:
+					return
+				case <-ticker.C:
+					// Query mpv for the current file
+					currentFile := mp.getCurrentFile(ipcSocketPath)
+					if currentFile != "" {
+						mp.mutex.Lock()
+						mp.currentlyPlaying[monitorIdx] = currentFile
+						mp.mutex.Unlock()
+					}
+				}
+			}
+		}()
+
 		// Wait for the process to complete
 		err := cmd.Wait()
 		if err != nil && !strings.Contains(err.Error(), "killed") {
 			Error("Media player on monitor %d exited with error: %v", monitorIdx, err)
 		}
 
+		// Stop the file checking goroutine
+		close(stopCheck)
+
 		// Remove the temp playlist file
 		os.Remove(playlistFile.Name())
+
+		// Remove the socket file
+		os.Remove(ipcSocketPath)
+
+		// Clear the currently playing entry
+		mp.mutex.Lock()
+		delete(mp.currentlyPlaying, monitorIdx)
+		mp.mutex.Unlock()
+
 		Info("Cleaned up playlist file for monitor %d", monitorIdx)
 	}()
 
@@ -301,4 +394,44 @@ func (mp *MediaPlayer) Rescan() error {
 	defer mp.mutex.Unlock()
 
 	return mp.scanMediaFiles()
+}
+
+// Add a new helper function to get the current file from mpv
+func (mp *MediaPlayer) getCurrentFile(socketPath string) string {
+	// Connect to the mpv socket
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		// This is expected sometimes, especially right after starting
+		return ""
+	}
+	defer conn.Close()
+
+	// Set a deadline to prevent hanging
+	conn.SetDeadline(time.Now().Add(100 * time.Millisecond))
+
+	// Send the command to get the current file
+	command := `{"command": ["get_property", "path"]}`
+	_, err = conn.Write([]byte(command + "\n"))
+	if err != nil {
+		return ""
+	}
+
+	// Read the response
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return ""
+	}
+
+	// Parse the JSON response
+	var response struct {
+		Data string `json:"data"`
+	}
+
+	err = json.Unmarshal(buf[:n], &response)
+	if err != nil {
+		return ""
+	}
+
+	return response.Data
 }
