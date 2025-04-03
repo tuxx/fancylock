@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -891,18 +890,27 @@ func (l *WaylandLocker) authenticate() {
 		l.lastFailureTime = time.Now()
 		Info("Authentication failed (%d/3 attempts): %s", l.failedAttempts, result.Message)
 
+		// First, do the password shake animation
+		l.shakePasswordDots()
+
 		// Check if we should implement a lockout
 		if l.failedAttempts >= 3 {
 			// Determine lockout duration - start with 30 seconds
 			lockoutDuration := 30 * time.Second
 
-			// If this isn't the first lockout, increase the duration
-			if l.lockoutActive {
-				// Increase by 30 seconds each time
-				lockoutDuration = 30 * time.Second * time.Duration(l.failedAttempts/3)
-				// Cap at 5 minutes
-				if lockoutDuration > 5*time.Minute {
-					lockoutDuration = 5 * time.Minute
+			// If in debug mode, cap at 5 seconds
+			if l.config.DebugExit {
+				lockoutDuration = 5 * time.Second
+				Info("Debug mode: Using shorter lockout duration of 5 seconds")
+			} else {
+				// If this isn't the first lockout, increase the duration
+				if l.lockoutActive {
+					// Increase by 30 seconds each time
+					lockoutDuration = 30 * time.Second * time.Duration(l.failedAttempts/3)
+					// Cap at 10 minutes
+					if lockoutDuration > 10*time.Minute {
+						lockoutDuration = 10 * time.Minute
+					}
 				}
 			}
 
@@ -912,19 +920,12 @@ func (l *WaylandLocker) authenticate() {
 
 			Info("Failed %d attempts, locking out for %v", l.failedAttempts, lockoutDuration)
 
-			// Show lockout message on screen
+			// Show lockout message on screen AFTER the shake animation is complete
 			l.StartCountdown("Account locked", int(lockoutDuration.Seconds()))
 
 			// Reset counter after implementing lockout
 			l.failedAttempts = 0
 		}
-
-		if strings.Contains(strings.ToLower(result.Message), "account is locked") {
-			Debug("String contains 'account is locked'")
-			l.StartCountdown("Account locked", 300)
-		}
-
-		l.shakePasswordDots()
 	}
 
 	l.securePassword.Clear()
@@ -942,9 +943,9 @@ func (l *WaylandLocker) StartCountdown(message string, duration int) {
 	l.countdownActive = true
 
 	// Make sure the duration is reasonable
-	if duration > 300 {
-		Debug("Capping long duration to 300 seconds")
-		duration = 300 // Cap at 5 minutes
+	if duration > 600 {
+		Debug("Capping long duration to 600 seconds")
+		duration = 600 // Cap at 10 minutes
 	}
 
 	go func() {
@@ -1077,8 +1078,8 @@ func safeCenteredMessage(surface *wl.Surface, l *WaylandLocker, message string, 
 		}
 	}
 
-	// Draw "LOCKED" message at the center
-	lockedMsg := "LOCKED"
+	// Draw "Intruder Alert!" message at the center
+	lockedMsg := "INTRUDER ALERT"
 
 	// Create a font drawer for basic text
 	ttf, err := opentype.Parse(fontBytes)
@@ -1087,6 +1088,7 @@ func safeCenteredMessage(surface *wl.Surface, l *WaylandLocker, message string, 
 		return
 	}
 
+	// Large font for "Intruder Alert!"
 	face, err := opentype.NewFace(ttf, &opentype.FaceOptions{
 		Size:    96, // Big font size
 		DPI:     72,
@@ -1109,9 +1111,30 @@ func safeCenteredMessage(surface *wl.Surface, l *WaylandLocker, message string, 
 	}
 	d.DrawString(lockedMsg)
 
-	// Timer below
+	// Smaller font for "Security cooldown engaged"
+	smallFace, err := opentype.NewFace(ttf, &opentype.FaceOptions{
+		Size:    36, // Smaller font size
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	if err != nil {
+		Error("Failed to create small font face: %v", err)
+		return
+	}
+	defer smallFace.Close()
+
+	retryMsg := "Security cooldown engaged"
+	retryX := (width - font.MeasureString(smallFace, retryMsg).Round()) / 2
+	retryY := height/2 + 10
+
+	d.Face = smallFace
+	d.Dot = fixed.P(retryX, retryY)
+	d.DrawString(retryMsg)
+
+	// Timer below with large font again
+	d.Face = face
 	timerX := (width - font.MeasureString(face, timeStr).Round()) / 2
-	timerY := height/2 + 50
+	timerY := height/2 + 150 // Moved lower
 	d.Dot = fixed.P(timerX, timerY)
 	d.DrawString(timeStr)
 
