@@ -187,6 +187,7 @@ type RegistryHandler struct {
 	shm              *wl.Shm
 	outputs          map[uint32]*wl.Output
 	outputGeometries map[*wl.Output]outputInfo
+	locker           *WaylandLocker
 }
 
 // Media file extension maps
@@ -206,33 +207,6 @@ type handlerFunc func(wl.OutputGeometryEvent)
 
 // outputModeHandlerFunc is a function type for handling output mode events
 type outputModeHandlerFunc func(ev wl.OutputModeEvent)
-
-// Config represents the configuration for the locker
-type Config struct {
-	DebugExit                             bool
-	LockoutDuration                       time.Duration
-	LockoutAttempts                       int
-	MediaPlayerPath                       string
-	MediaPlayerArgs                       []string
-	MediaPlayerVolume                     int
-	MediaPlayerEnabled                    bool
-	MediaPlayerAutostart                  bool
-	MediaPlayerAutoplay                   bool
-	MediaPlayerAutoplayDelay              time.Duration
-	MediaPlayerAutoplayVolume             int
-	MediaPlayerAutoplayFadeIn             time.Duration
-	MediaPlayerAutoplayFadeOut            time.Duration
-	MediaPlayerAutoplayFadeStep           int
-	MediaPlayerAutoplayFadeInterval       time.Duration
-	MediaPlayerAutoplayFadeInStart        bool
-	MediaPlayerAutoplayFadeOutEnd         bool
-	MediaPlayerAutoplayFadeInEnd          bool
-	MediaPlayerAutoplayFadeOutStart       bool
-	MediaPlayerAutoplayFadeInStartVolume  int
-	MediaPlayerAutoplayFadeOutStartVolume int
-	MediaPlayerAutoplayFadeInEndVolume    int
-	MediaPlayerAutoplayFadeOutEndVolume   int
-}
 
 // WaylandLocker represents a Wayland-based screen locker
 type WaylandLocker struct {
