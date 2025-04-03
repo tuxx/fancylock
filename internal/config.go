@@ -32,6 +32,7 @@ func DefaultConfig() Configuration {
 		PostLockCommand:    "",    // No default post-lock command
 		LockPauseMedia:     false, // Disabled by default
 		UnlockUnpauseMedia: false, // Disabled by default
+		EnableFingerprint:  false, // Disabled by default
 	}
 }
 

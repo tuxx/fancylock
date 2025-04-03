@@ -12,6 +12,56 @@ import (
 	"github.com/msteinert/pam"
 )
 
+// NewSecurePassword creates a new secure password container
+func NewSecurePassword() *SecurePassword {
+	return &SecurePassword{
+		data: make([]byte, 0, 64),
+	}
+}
+
+// Append adds a character to the password
+func (p *SecurePassword) Append(char byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.data = append(p.data, char)
+}
+
+// RemoveLast removes the last character from the password
+func (p *SecurePassword) RemoveLast() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.data) > 0 {
+		// Zero out the last byte before removing it
+		p.data[len(p.data)-1] = 0
+		p.data = p.data[:len(p.data)-1]
+	}
+}
+
+// Clear securely wipes the password data
+func (p *SecurePassword) Clear() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Zero out the memory before resetting
+	for i := range p.data {
+		p.data[i] = 0
+	}
+	p.data = p.data[:0]
+}
+
+// String returns the password as a string (for debugging only)
+func (p *SecurePassword) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return string(p.data)
+}
+
+// Length returns the length of the password
+func (p *SecurePassword) Length() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.data)
+}
+
 // NewPamAuthenticator creates a new PAM authenticator
 func NewPamAuthenticator(config Configuration) *PamAuthenticator {
 	// Get the current username
@@ -24,11 +74,85 @@ func NewPamAuthenticator(config Configuration) *PamAuthenticator {
 	return &PamAuthenticator{
 		serviceName: config.PamService,
 		username:    username,
+		config:      config,
+	}
+}
+
+// AuthenticateWithFingerprint attempts to authenticate using fingerprint
+func (a *PamAuthenticator) AuthenticateWithFingerprint() AuthResult {
+	if !a.config.EnableFingerprint {
+		return AuthResult{
+			Success: false,
+			Message: "Fingerprint authentication is not enabled",
+		}
+	}
+
+	// Define the conversation function for fingerprint authentication
+	conv := func(style pam.Style, msg string) (string, error) {
+		switch style {
+		case pam.PromptEchoOff:
+			// For fingerprint, we don't need to provide any input
+			return "", nil
+		case pam.PromptEchoOn:
+			// Ignore username prompts as we already provided it
+			return "", nil
+		case pam.ErrorMsg:
+			// Log error messages but keep going
+			Info("PAM error: %s", msg)
+			return "", nil
+		case pam.TextInfo:
+			// Log informational messages but keep going
+			Info("PAM info: %s", msg)
+			return "", nil
+		default:
+			return "", errors.New("unexpected conversation style")
+		}
+	}
+
+	// Start PAM transaction
+	t, err := pam.StartFunc(a.serviceName, a.username, conv)
+	if err != nil {
+		return AuthResult{
+			Success: false,
+			Message: fmt.Sprintf("Failed to start PAM transaction: %v", err),
+		}
+	}
+
+	// Attempt authentication
+	err = t.Authenticate(0)
+	if err != nil {
+		return AuthResult{
+			Success: false,
+			Message: fmt.Sprintf("Fingerprint authentication failed: %v", err),
+		}
+	}
+
+	// Check account validity
+	err = t.AcctMgmt(0)
+	if err != nil {
+		return AuthResult{
+			Success: false,
+			Message: fmt.Sprintf("Account validation failed: %v", err),
+		}
+	}
+
+	return AuthResult{
+		Success: true,
+		Message: "Fingerprint authentication successful",
 	}
 }
 
 // Authenticate attempts to authenticate with the given password
 func (a *PamAuthenticator) Authenticate(password string) AuthResult {
+	// If fingerprint is enabled, try it first
+	if a.config.EnableFingerprint {
+		result := a.AuthenticateWithFingerprint()
+		if result.Success {
+			return result
+		}
+		// If fingerprint fails, fall back to password
+	}
+
 	// Define the conversation function that provides the password
 	conv := func(style pam.Style, msg string) (string, error) {
 		switch style {
@@ -78,9 +202,6 @@ func (a *PamAuthenticator) Authenticate(password string) AuthResult {
 		}
 	}
 
-	// PAM transaction doesn't have an End() method in this library
-	// It will be automatically ended when the transaction goes out of scope
-
 	return AuthResult{
 		Success: true,
 		Message: "Authentication successful",
@@ -96,10 +217,7 @@ type LockHelper struct {
 
 // NewLockHelper creates a new helper instance with the given configuration
 func NewLockHelper(config Configuration) *LockHelper {
-	auth := &PamAuthenticator{
-		serviceName: config.PamService,
-		username:    os.Getenv("USER"),
-	}
+	auth := NewPamAuthenticator(config)
 
 	var mediaCtrl *MediaController
 	if config.LockPauseMedia || config.UnlockUnpauseMedia {
@@ -217,97 +335,49 @@ func (h *LockHelper) RunCommand(command string, args ...string) (string, error) 
 	return string(output), nil
 }
 
-// NewSecurePassword creates a new secure password container
-func NewSecurePassword() *SecurePassword {
-	return &SecurePassword{
-		data: make([]byte, 0, 64),
-	}
-}
-
-// Append adds a character to the password
-func (p *SecurePassword) Append(char byte) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.data = append(p.data, char)
-}
-
-// RemoveLast removes the last character from the password
-func (p *SecurePassword) RemoveLast() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.data) > 0 {
-		// Zero out the last byte before removing it
-		p.data[len(p.data)-1] = 0
-		p.data = p.data[:len(p.data)-1]
-	}
-}
-
-// Clear securely wipes the password data
-func (p *SecurePassword) Clear() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	// Zero out the memory before resetting
-	for i := range p.data {
-		p.data[i] = 0
-	}
-	p.data = p.data[:0]
-}
-
-// String returns the password as a string (use carefully)
-func (p *SecurePassword) String() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	// Create a temporary string for authentication
-	return string(p.data)
-}
-
-// Length returns the password length
-func (p *SecurePassword) Length() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return len(p.data)
-}
-
-// runShellCommand executes a shell command string
-func runShellCommand(cmd string) error {
-	return exec.Command("sh", "-c", strings.TrimSpace(cmd)).Run()
-}
-
-// PauseMediaIfEnabled pauses all media if enabled in config
+// PauseMediaIfEnabled pauses all media players if enabled in config
 func (h *LockHelper) PauseMediaIfEnabled() error {
 	if !h.config.LockPauseMedia {
-		Debug("LockPauseMedia is disabled in config, skipping media pause")
 		return nil
 	}
 
 	if h.mediaCtrl == nil {
-		Error("LockPauseMedia is enabled but media controller is not initialized")
-		return nil
+		return errors.New("media controller not initialized")
 	}
 
-	Debug("Pausing all media players")
 	return h.mediaCtrl.PauseAllMedia()
 }
 
-// UnpauseMediaIfEnabled unpauses all media if enabled in config
+// UnpauseMediaIfEnabled unpauses all media players if enabled in config
 func (h *LockHelper) UnpauseMediaIfEnabled() error {
 	if !h.config.UnlockUnpauseMedia {
-		Debug("UnlockUnpauseMedia is disabled in config, skipping media unpause")
 		return nil
 	}
 
 	if h.mediaCtrl == nil {
-		Error("UnlockUnpauseMedia is enabled but media controller is not initialized")
-		return nil
+		return errors.New("media controller not initialized")
 	}
 
-	Debug("Unpausing all media players")
 	return h.mediaCtrl.UnpauseAllMedia()
 }
 
-// Close cleans up resources
+// Close cleans up resources used by the LockHelper
 func (h *LockHelper) Close() {
 	if h.mediaCtrl != nil {
 		h.mediaCtrl.Close()
 	}
+}
+
+func runShellCommand(cmd string) error {
+	// Split the command into parts
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	// Create the command
+	command := exec.Command(parts[0], parts[1:]...)
+
+	// Run the command
+	return command.Run()
 }

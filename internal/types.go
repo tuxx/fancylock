@@ -108,6 +108,9 @@ type Configuration struct {
 
 	// Whether to unpause all media players when unlocking the screen
 	UnlockUnpauseMedia bool `json:"unlock_unpause_media"`
+
+	// Whether to enable fingerprint authentication
+	EnableFingerprint bool `json:"enable_fingerprint"`
 }
 
 // ScreenLocker interface defines methods that any screen locker should implement
@@ -126,6 +129,7 @@ type AuthResult struct {
 type PamAuthenticator struct {
 	serviceName string
 	username    string
+	config      Configuration
 }
 
 type SecurePassword struct {
