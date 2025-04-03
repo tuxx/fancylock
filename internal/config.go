@@ -21,19 +21,17 @@ func DefaultConfig() Configuration {
 	}
 
 	return Configuration{
-		MediaDir:         filepath.Join(homeDir, "Videos"),
-		LockScreen:       false,
-		SupportedExt:     []string{".mov", ".mkv", ".mp4", ".avi", ".webm"},
-		IdleTimeout:      300, // 5 minutes
-		PamService:       PamService,
-		IncludeImages:    true,
-		ImageDisplayTime: 30,
-		BackgroundColor:  "#000000",
-		BlurBackground:   false,
-		MediaPlayerCmd:   "mpv",
-		DebugExit:        false, // Disabled by default for security
-		PreLockCommand:   "",    // No default pre-lock command
-		PostLockCommand:  "",    // No default post-lock command
+		MediaDir:           filepath.Join(homeDir, "Videos"),
+		LockScreen:         false,
+		SupportedExt:       []string{".mov", ".mkv", ".mp4", ".avi", ".webm"},
+		PamService:         PamService,
+		IncludeImages:      true,
+		ImageDisplayTime:   30,
+		DebugExit:          false, // Disabled by default for security
+		PreLockCommand:     "",    // No default pre-lock command
+		PostLockCommand:    "",    // No default post-lock command
+		LockPauseMedia:     false, // Disabled by default
+		UnlockUnpauseMedia: false, // Disabled by default
 	}
 }
 
@@ -100,11 +98,6 @@ func validateConfig(config *Configuration) error {
 	// Ensure we have at least one supported extension
 	if len(config.SupportedExt) == 0 {
 		return fmt.Errorf("no supported media extensions specified")
-	}
-
-	// Ensure idle timeout is reasonable
-	if config.IdleTimeout < 0 {
-		return fmt.Errorf("idle timeout cannot be negative")
 	}
 
 	// Ensure image display time is reasonable

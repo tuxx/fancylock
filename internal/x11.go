@@ -1,10 +1,9 @@
 package internal
 
 import (
+	_ "embed"
 	"fmt"
-	"os"
-	"os/exec"
-	"strings"
+	"image"
 	"time"
 
 	"github.com/BurntSushi/xgb"
@@ -14,7 +13,13 @@ import (
 	"github.com/BurntSushi/xgb/xfixes"
 	"github.com/BurntSushi/xgb/xproto"
 	"github.com/BurntSushi/xgb/xtest"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/math/fixed"
 )
+
+//go:embed fonts/DejaVuSans-Bold.ttf
+var x11FontBytes []byte
 
 // Init initializes the X11 connection and resources
 func (l *X11Locker) Init() error {
@@ -125,30 +130,61 @@ func (l *X11Locker) Init() error {
 	}
 	Info("Graphics context initialized successfully")
 
-	// Initialize GC for drawing text with white color
-	Info("Initializing graphics context for text")
-	textGcid, err := xproto.NewGcontextId(l.conn)
+	// Create a graphics context for text with the embedded font
+	l.textGC, err = xproto.NewGcontextId(l.conn)
 	if err != nil {
-		Error("Failed to allocate text graphics context ID: %v", err)
-		return fmt.Errorf("failed to allocate text graphics context ID: %v", err)
+		return fmt.Errorf("failed to create text graphics context: %v", err)
 	}
-	l.textGC = textGcid
 
+	// Set up the text graphics context with white foreground
 	err = xproto.CreateGCChecked(
 		l.conn,
 		l.textGC,
 		xproto.Drawable(l.screen.Root),
-		xproto.GcForeground,
-		[]uint32{l.screen.WhitePixel},
+		xproto.GcForeground|xproto.GcBackground,
+		[]uint32{l.screen.WhitePixel, l.screen.BlackPixel},
 	).Check()
 	if err != nil {
 		Error("Failed to create text graphics context: %v", err)
 		return fmt.Errorf("failed to create text graphics context: %v", err)
 	}
-	Info("Text graphics context initialized successfully")
+
+	// Set font properties for larger text
+	fontName := "fixed" // Use the built-in fixed font which is guaranteed to exist
+
+	// Allocate a new font ID
+	fontID, err := xproto.NewFontId(l.conn)
+	if err != nil {
+		Error("Failed to allocate font ID: %v", err)
+		return fmt.Errorf("failed to allocate font ID: %v", err)
+	}
+
+	// Try to load the font
+	err = xproto.OpenFontChecked(
+		l.conn,
+		fontID,
+		uint16(len(fontName)),
+		fontName,
+	).Check()
+	if err != nil {
+		Error("Failed to open font: %v", err)
+		return fmt.Errorf("failed to open font: %v", err)
+	}
+	defer xproto.CloseFont(l.conn, fontID)
+
+	err = xproto.ChangeGCChecked(
+		l.conn,
+		l.textGC,
+		xproto.GcFont,
+		[]uint32{uint32(fontID)},
+	).Check()
+	if err != nil {
+		Error("Failed to set font: %v", err)
+		return fmt.Errorf("failed to set font: %v", err)
+	}
 
 	l.dotWindows = []xproto.Window{}
-	l.messageWindow = 0 // Initialize to 0 (invalid window ID)
+	l.messageWindows = []xproto.Window{}
 
 	Info("X11 initialization completed successfully")
 	return nil
@@ -252,223 +288,38 @@ func NewX11Locker(config Configuration) *X11Locker {
 	}
 }
 
-// Lock implements the screen locking functionality
+// Lock immediately locks the screen
 func (l *X11Locker) Lock() error {
-	Info("Starting lock procedure")
-	// Check if another instance is already running
-	Info("Checking for other instances")
-	if err := l.helper.EnsureSingleInstance(); err != nil {
-		Error("Another instance is already running: %v", err)
-		return err
+	// Check if already locked
+	if l.isLocked {
+		return nil
 	}
-	Info("No other instances found")
 
 	// Run pre-lock command if configured
 	if err := l.helper.RunPreLockCommand(); err != nil {
-		Warn("Pre-lock command error: %v", err)
-		// Continue with locking even if the pre-lock command fails
+		Error("Failed to run pre-lock command: %v", err)
 	}
 
-	// Initialize X11 connection and resources
-	Info("Initializing X11 resources")
-	if err := l.Init(); err != nil {
-		Error("Failed to initialize X11: %v", err)
-		return err
-	}
-	Info("X11 resources initialized successfully")
-
-	// Detect monitors and set up environment for the media player
-	Info("Detecting monitors")
-	monitors, err := l.detectMonitors()
-	if err != nil {
-		Warn("Failed to detect monitors: %v", err)
-		Info("Using fallback monitor configuration")
-		monitors = []Monitor{{
-			X:      0,
-			Y:      0,
-			Width:  int(l.width),
-			Height: int(l.height),
-		}}
+	// Pause media if enabled
+	if err := l.helper.PauseMediaIfEnabled(); err != nil {
+		Error("Failed to pause media: %v", err)
 	}
 
-	Info("Detected %d monitors", len(monitors))
-
-	// Pass monitor information to media player
-	Info("Setting monitor information for media player")
-	l.mediaPlayer.SetMonitors(monitors)
-
-	// Set the window ID as an environment variable for the media player to use
-	// Note: This is less important with InputOnly window but keeping for compatibility
-	windowIDStr := fmt.Sprintf("%d", l.window)
-	os.Setenv("FANCYLOCK_WINDOW_ID", windowIDStr)
-	Info("Setting window ID for media player: %s", windowIDStr)
-
-	// Start playing media in background before showing lock screen
-	Info("Starting media player")
-	if err := l.mediaPlayer.Start(); err != nil {
-		Warn("Failed to start media player: %v", err)
-	} else {
-		Info("Media player started successfully")
-	}
-
-	// Give media player time to start fully before showing lock screen
-	Info("Waiting for media player to initialize")
-	time.Sleep(500 * time.Millisecond)
-
-	// Now map the window (make it visible)
-	Info("Mapping window (making it visible)")
-	if err := xproto.MapWindowChecked(l.conn, l.window).Check(); err != nil {
-		Error("Failed to map window: %v", err)
-		return fmt.Errorf("failed to map window: %v", err)
-	}
-	Info("Window mapped successfully")
-
-	// Raise the window to the top
-	Info("Raising window to top")
-	if err := xproto.ConfigureWindowChecked(
-		l.conn,
-		l.window,
-		xproto.ConfigWindowStackMode,
-		[]uint32{xproto.StackModeAbove},
-	).Check(); err != nil {
-		Error("Failed to raise window: %v", err)
-		return fmt.Errorf("failed to raise window: %v", err)
-	}
-	Info("Window raised successfully")
-
-	// Hide the cursor
-	Info("Attempting to hide cursor")
-	if err := l.hideCursor(); err != nil {
-		Warn("Failed to hide cursor: %v", err)
-	} else {
-		Info("Cursor hidden successfully")
-	}
-
-	// Grab keyboard to prevent keyboard shortcuts from working
-	Info("Grabbing keyboard")
-	keyboard := xproto.GrabKeyboard(
-		l.conn,
-		true,
-		l.window,
-		xproto.TimeCurrentTime,
-		xproto.GrabModeAsync,
-		xproto.GrabModeAsync,
-	)
-	keyboardReply, err := keyboard.Reply()
-	if err != nil {
-		Error("Failed to grab keyboard: %v", err)
-		return fmt.Errorf("failed to grab keyboard: %v", err)
-	}
-	if keyboardReply.Status != xproto.GrabStatusSuccess {
-		Error("Failed to grab keyboard: status %d", keyboardReply.Status)
-		return fmt.Errorf("failed to grab keyboard: status %d", keyboardReply.Status)
-	}
-	Info("Keyboard grabbed successfully")
-
-	// Grab pointer to prevent mouse actions
-	Info("Grabbing pointer (mouse)")
-	pointer := xproto.GrabPointer(
-		l.conn,
-		true,
-		l.window,
-		xproto.EventMaskButtonPress,
-		xproto.GrabModeAsync,
-		xproto.GrabModeAsync,
-		l.window,
-		xproto.CursorNone,
-		xproto.TimeCurrentTime,
-	)
-	pointerReply, err := pointer.Reply()
-	if err != nil {
-		Error("Failed to grab pointer: %v", err)
-		return fmt.Errorf("failed to grab pointer: %v", err)
-	}
-	if pointerReply.Status != xproto.GrabStatusSuccess {
-		Error("Failed to grab pointer: status %d", pointerReply.Status)
-		return fmt.Errorf("failed to grab pointer: status %d", pointerReply.Status)
-	}
-	Info("Pointer grabbed successfully")
-
-	// Set is locked flag
+	// Set locked state
 	l.isLocked = true
-	Info("Screen lock activated")
 
-	// Main event loop
-	Info("Entering main event loop")
-	for l.isLocked {
-		// If we're in lockout mode, we need to keep updating the timer display
-		if l.lockoutManager.IsLockedOut() && time.Now().Before(l.lockoutManager.GetLockoutUntil()) {
-			Debug("In lockout mode, updating timer")
-			// Redraw UI to update the lockout timer
-			l.drawUI()
-
-			// Wait for a short time before checking again
-			time.Sleep(1000 * time.Millisecond) // Update once per second
-
-			// Check for any pending events
-			ev, err := l.conn.PollForEvent()
-			if err != nil {
-				Error("Error polling for event: %v", err)
-				continue
-			}
-
-			// Process the event if there is one
-			if ev != nil {
-				Debug("Received event during lockout: %T", ev)
-				switch e := ev.(type) {
-				case xproto.KeyPressEvent:
-					Debug("KeyPress event during lockout: keycode=%d", e.Detail)
-					l.handleKeyPress(e)
-				}
-			}
-
-			continue // Continue the loop to update the timer
-		}
-
-		// Regular event handling for non-lockout mode
-		Debug("Waiting for X11 event")
-		ev, err := l.conn.WaitForEvent()
-		if err != nil {
-			if strings.Contains(err.Error(), "BadRequest") {
-				// This is likely a harmless error related to X11 extensions
-				Info("Ignoring X11 BadRequest error (this is usually harmless)")
-			} else {
-				Error("Error waiting for event: %v", err)
-			}
-			// Continue the loop even after an error
-			continue
-		}
-
-		if ev == nil {
-			// Just a safety check
-			Debug("Received nil event, sleeping briefly")
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-
-		Debug("Received event: %T", ev)
-		switch e := ev.(type) {
-		case xproto.KeyPressEvent:
-			Debug("KeyPress event: keycode=%d", e.Detail)
-			l.handleKeyPress(e)
-			l.drawPasswordUI()
-
-		case xproto.ExposeEvent:
-			Debug("Expose event: x=%d, y=%d, width=%d, height=%d", e.X, e.Y, e.Width, e.Height)
-			// Redraw UI when exposed
-			l.drawUI()
-
-		case xproto.MappingNotifyEvent:
-			// Handle keyboard mapping changes
-			Debug("MappingNotify event: request=%d", e.Request)
-			Info("Keyboard mapping changed")
+	// Start media playback if configured
+	if l.mediaPlayer != nil {
+		if err := l.mediaPlayer.Start(); err != nil {
+			Error("Failed to start media playback: %v", err)
 		}
 	}
 
-	// Clean up
-	Info("Lock deactivated, cleaning up resources")
-	l.cleanup()
-	Info("Cleanup completed")
+	// Run post-lock command if configured
+	if err := l.helper.RunPostLockCommand(); err != nil {
+		Error("Failed to run post-lock command: %v", err)
+	}
+
 	return nil
 }
 
@@ -677,6 +528,12 @@ func (l *X11Locker) authenticate() {
 		// Authentication successful, unlock and reset counters
 		l.isLocked = false
 		l.lockoutManager.ResetLockout()
+
+		// Unpause media if enabled
+		if err := l.helper.UnpauseMediaIfEnabled(); err != nil {
+			Warn("Failed to unpause media: %v", err)
+		}
+
 		Info("Authentication successful, unlocking screen")
 	} else {
 		// Authentication failed, use the lockout manager to handle the failed attempt
@@ -771,114 +628,256 @@ func (l *X11Locker) drawUI() {
 // drawLockoutMessage displays a message indicating the system is locked out
 func (l *X11Locker) drawLockoutMessage() {
 	Info("Drawing lockout message")
-	// If we don't already have a message window, create one
-	if l.messageWindow == 0 {
-		Debug("Creating new message window for lockout")
-		wid, err := xproto.NewWindowId(l.conn)
-		if err != nil {
-			Error("Failed to create message window ID: %v", err)
-			return
-		}
-		l.messageWindow = wid
-		Debug("Allocated message window ID: %d", l.messageWindow)
+	// Get the list of monitors
+	monitors, err := l.detectMonitors()
+	if err != nil {
+		Error("Failed to detect monitors: %v", err)
+		return
+	}
 
-		// Center the window
-		width := uint16(400)
-		height := uint16(120)
-		x := int16((l.width - width) / 2)
-		y := int16((l.height - height) / 2)
-		Debug("Message window position: x=%d, y=%d, width=%d, height=%d", x, y, width, height)
+	// If we don't already have message windows, create them
+	if len(l.messageWindows) == 0 {
+		Debug("Creating new message windows for lockout")
+		// Create a window for each monitor
+		for _, monitor := range monitors {
+			wid, err := xproto.NewWindowId(l.conn)
+			if err != nil {
+				Error("Failed to create message window ID: %v", err)
+				continue
+			}
+			l.messageWindows = append(l.messageWindows, wid)
+			Debug("Allocated message window ID: %d", wid)
 
-		// Create the window with a dark gray background
-		err = xproto.CreateWindowChecked(
-			l.conn,
-			l.screen.RootDepth,
-			l.messageWindow,
-			l.screen.Root,
-			x, y, width, height,
-			2, // Thin border for a cleaner look
-			xproto.WindowClassInputOutput,
-			l.screen.RootVisual,
-			xproto.CwBackPixel|xproto.CwBorderPixel|xproto.CwOverrideRedirect,
-			[]uint32{
-				0x00333333, // Dark gray background
-				0x00444444, // Slightly lighter border
-				1,          // Override redirect
-			},
-		).Check()
+			// Create a window for this monitor with a semi-transparent background
+			err = xproto.CreateWindowChecked(
+				l.conn,
+				l.screen.RootDepth,
+				wid,
+				l.screen.Root,
+				int16(monitor.X), int16(monitor.Y),
+				uint16(monitor.Width), uint16(monitor.Height),
+				0, // No border
+				xproto.WindowClassInputOutput,
+				l.screen.RootVisual,
+				xproto.CwOverrideRedirect|xproto.CwBackingStore|xproto.CwEventMask,
+				[]uint32{
+					1, // Override redirect
+					1, // Backing store
+					xproto.EventMaskExposure | xproto.EventMaskVisibilityChange,
+				},
+			).Check()
 
-		if err != nil {
-			Error("Failed to create message window: %v", err)
-			l.messageWindow = 0
-			return
-		}
-		Info("Message window created successfully")
+			if err != nil {
+				Error("Failed to create message window: %v", err)
+				continue
+			}
 
-		// Set window properties to keep it on top
-		atomName := "_NET_WM_STATE"
-		Debug("Interning atom: %s", atomName)
-		atom, err := xproto.InternAtom(l.conn, false, uint16(len(atomName)), atomName).Reply()
-		if err == nil && atom != nil {
-			atomName = "_NET_WM_STATE_ABOVE"
+			// Set window properties to keep it on top and make it fullscreen
+			// First, set the window type to be a dialog
+			atomName := "_NET_WM_WINDOW_TYPE"
 			Debug("Interning atom: %s", atomName)
-			aboveAtom, err := xproto.InternAtom(l.conn, false, uint16(len(atomName)), atomName).Reply()
-			if err == nil && aboveAtom != nil {
-				Debug("Setting window state to always on top")
-				xproto.ChangeProperty(l.conn, xproto.PropModeReplace, l.messageWindow,
-					atom.Atom, xproto.AtomAtom, 32, 1, []byte{
-						byte(aboveAtom.Atom),
-						byte(aboveAtom.Atom >> 8),
-						byte(aboveAtom.Atom >> 16),
-						byte(aboveAtom.Atom >> 24),
-					})
+			windowTypeAtom, err := xproto.InternAtom(l.conn, false, uint16(len(atomName)), atomName).Reply()
+			if err == nil && windowTypeAtom != nil {
+				atomName = "_NET_WM_WINDOW_TYPE_DIALOG"
+				Debug("Interning atom: %s", atomName)
+				dialogAtom, err := xproto.InternAtom(l.conn, false, uint16(len(atomName)), atomName).Reply()
+				if err == nil && dialogAtom != nil {
+					Debug("Setting window type to dialog")
+					xproto.ChangeProperty(l.conn, xproto.PropModeReplace, wid,
+						windowTypeAtom.Atom, xproto.AtomAtom, 32, 1, []byte{
+							byte(dialogAtom.Atom),
+							byte(dialogAtom.Atom >> 8),
+							byte(dialogAtom.Atom >> 16),
+							byte(dialogAtom.Atom >> 24),
+						})
+				}
+			}
+
+			// Set the window state to be always on top
+			atomName = "_NET_WM_STATE"
+			Debug("Interning atom: %s", atomName)
+			stateAtom, err := xproto.InternAtom(l.conn, false, uint16(len(atomName)), atomName).Reply()
+			if err == nil && stateAtom != nil {
+				atomName = "_NET_WM_STATE_ABOVE"
+				Debug("Interning atom: %s", atomName)
+				aboveAtom, err := xproto.InternAtom(l.conn, false, uint16(len(atomName)), atomName).Reply()
+				if err == nil && aboveAtom != nil {
+					Debug("Setting window state to always on top")
+					xproto.ChangeProperty(l.conn, xproto.PropModeReplace, wid,
+						stateAtom.Atom, xproto.AtomAtom, 32, 1, []byte{
+							byte(aboveAtom.Atom),
+							byte(aboveAtom.Atom >> 8),
+							byte(aboveAtom.Atom >> 16),
+							byte(aboveAtom.Atom >> 24),
+						})
+				}
 			}
 		}
 	}
-
-	// Show the window
-	Debug("Mapping lockout message window")
-	xproto.MapWindow(l.conn, l.messageWindow)
 
 	// Get remaining lockout time using the lockout manager
 	timeString := l.lockoutManager.FormatRemainingTime()
 	Debug("Lockout remaining time: %s", timeString)
 
-	// Clear the window with our background color
-	Debug("Clearing message window")
-	xproto.PolyFillRectangle(l.conn, xproto.Drawable(l.messageWindow), l.gc, []xproto.Rectangle{
-		{0, 0, 400, 120},
+	// Parse the embedded font
+	ttf, err := opentype.Parse(x11FontBytes)
+	if err != nil {
+		Error("Failed to parse embedded font: %v", err)
+		return
+	}
+
+	// Create a large font face for the title
+	titleFace, err := opentype.NewFace(ttf, &opentype.FaceOptions{
+		Size:    96,
+		DPI:     72,
+		Hinting: font.HintingFull,
 	})
+	if err != nil {
+		Error("Failed to create title font face: %v", err)
+		return
+	}
+	defer titleFace.Close()
 
-	// Draw the title - simple, centered and larger
-	title := "LOCKED OUT"
-	titleX := (400 - uint16(len(title)*8)) / 2 // Approximate width of 8 pixels per character
-	Debug("Drawing title '%s' at x=%d", title, titleX)
+	// Create a medium font face for the subtitle
+	subtitleFace, err := opentype.NewFace(ttf, &opentype.FaceOptions{
+		Size:    36,
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	if err != nil {
+		Error("Failed to create subtitle font face: %v", err)
+		return
+	}
+	defer subtitleFace.Close()
 
-	xproto.ImageText8(l.conn, uint8(len(title)),
-		xproto.Drawable(l.messageWindow), l.textGC,
-		int16(titleX), 50, title)
+	// Draw on each monitor
+	for i, monitor := range monitors {
+		if i >= len(l.messageWindows) {
+			Error("No message window for monitor %d", i)
+			continue
+		}
 
-	// Draw the timer - centered below the title
-	timerText := fmt.Sprintf("Try again in %s", timeString)
-	timerX := (400 - uint16(len(timerText)*8)) / 2
-	Debug("Drawing timer text '%s' at x=%d", timerText, timerX)
+		messageWindow := l.messageWindows[i]
+		Debug("Drawing on monitor %d: x=%d, y=%d, width=%d, height=%d", i, monitor.X, monitor.Y, monitor.Width, monitor.Height)
 
-	xproto.ImageText8(l.conn, uint8(len(timerText)),
-		xproto.Drawable(l.messageWindow), l.textGC,
-		int16(timerX), 80, timerText)
+		// Show the window
+		Debug("Mapping lockout message window")
+		xproto.MapWindow(l.conn, messageWindow)
 
-	// Force window to be visible and on top
-	Debug("Raising message window to top")
-	xproto.ConfigureWindow(
-		l.conn,
-		l.messageWindow,
-		xproto.ConfigWindowStackMode,
-		[]uint32{xproto.StackModeAbove},
-	)
+		// Create an image to render the text
+		img := image.NewRGBA(image.Rect(0, 0, monitor.Width, monitor.Height))
 
-	// Sync to ensure changes are sent to the X server
-	Debug("Syncing X connection")
-	l.conn.Sync()
+		// Draw "INTRUDER ALERT" at the center with large font
+		title := "INTRUDER ALERT"
+		titleBounds := font.MeasureString(titleFace, title)
+		titleX := (monitor.Width - titleBounds.Round()) / 2
+		titleY := monitor.Height/2 - 100
+
+		d := &font.Drawer{
+			Dst:  img,
+			Src:  image.White,
+			Face: titleFace,
+			Dot:  fixed.P(titleX, titleY),
+		}
+		d.DrawString(title)
+
+		// Draw "Security cooldown engaged" below with medium font
+		subtitle := "Security cooldown engaged"
+		subtitleBounds := font.MeasureString(subtitleFace, subtitle)
+		subtitleX := (monitor.Width - subtitleBounds.Round()) / 2
+		subtitleY := monitor.Height / 2
+
+		d.Face = subtitleFace
+		d.Dot = fixed.P(subtitleX, subtitleY)
+		d.DrawString(subtitle)
+
+		// Draw the timer below with large font
+		timerBounds := font.MeasureString(titleFace, timeString)
+		timerX := (monitor.Width - timerBounds.Round()) / 2
+		timerY := monitor.Height/2 + 100
+
+		d.Face = titleFace
+		d.Dot = fixed.P(timerX, timerY)
+		d.DrawString(timeString)
+
+		// Create a pixmap to hold the rendered text
+		pixmap, err := xproto.NewPixmapId(l.conn)
+		if err != nil {
+			Error("Failed to create pixmap: %v", err)
+			continue
+		}
+
+		err = xproto.CreatePixmapChecked(
+			l.conn,
+			l.screen.RootDepth,
+			pixmap,
+			xproto.Drawable(messageWindow),
+			uint16(monitor.Width), uint16(monitor.Height),
+		).Check()
+		if err != nil {
+			Error("Failed to create pixmap: %v", err)
+			continue
+		}
+
+		// Create a graphics context for the pixmap
+		gc, err := xproto.NewGcontextId(l.conn)
+		if err != nil {
+			Error("Failed to create graphics context: %v", err)
+			continue
+		}
+
+		err = xproto.CreateGCChecked(
+			l.conn,
+			gc,
+			xproto.Drawable(pixmap),
+			xproto.GcForeground|xproto.GcBackground,
+			[]uint32{l.screen.WhitePixel, l.screen.BlackPixel},
+		).Check()
+		if err != nil {
+			Error("Failed to create graphics context: %v", err)
+			continue
+		}
+
+		// Copy the rendered image to the pixmap
+		for y := 0; y < monitor.Height; y++ {
+			for x := 0; x < monitor.Width; x++ {
+				_, _, _, a := img.At(x, y).RGBA()
+				if a > 0 {
+					// Only draw non-transparent pixels
+					xproto.PolyPoint(
+						l.conn,
+						xproto.CoordModeOrigin,
+						xproto.Drawable(pixmap),
+						gc,
+						[]xproto.Point{{X: int16(x), Y: int16(y)}},
+					)
+				}
+			}
+		}
+
+		// Copy the pixmap to the window
+		xproto.CopyArea(
+			l.conn,
+			xproto.Drawable(pixmap),
+			xproto.Drawable(messageWindow),
+			l.gc,
+			0, 0, 0, 0,
+			uint16(monitor.Width), uint16(monitor.Height),
+		)
+
+		// Clean up
+		xproto.FreePixmap(l.conn, pixmap)
+		xproto.FreeGC(l.conn, gc)
+
+		// Force window to be visible and on top
+		Debug("Raising message window to top")
+		xproto.ConfigureWindow(
+			l.conn,
+			messageWindow,
+			xproto.ConfigWindowStackMode,
+			[]uint32{xproto.StackModeAbove},
+		)
+	}
 
 	// Start a timer to update the countdown if not already running
 	if !l.lockoutManager.IsTimerRunning() {
@@ -902,62 +901,15 @@ func (l *X11Locker) drawLockoutMessage() {
 			l.lockoutManager.SetTimerRunning(false)
 			Info("Lockout countdown timer stopped")
 
-			// When lockout is over, hide the window if we're still locked
+			// When lockout is over, hide the windows if we're still locked
 			if l.isLocked {
-				Debug("Lockout ended, hiding message window")
-				xproto.UnmapWindow(l.conn, l.messageWindow)
+				Debug("Lockout ended, hiding message windows")
+				for _, window := range l.messageWindows {
+					xproto.UnmapWindow(l.conn, window)
+				}
 			}
 		}()
 	}
-}
-
-// updateLockoutTimerDisplay updates the countdown timer in the lockout message window
-func (l *X11Locker) updateLockoutTimerDisplay() {
-	Debug("Updating lockout timer display")
-	if l.messageWindow == 0 {
-		Debug("No message window exists, can't update timer")
-		return
-	}
-
-	// Get remaining lockout time using the lockout manager
-	timeString := l.lockoutManager.FormatRemainingTime()
-	Debug("Updated lockout remaining time: %s", timeString)
-
-	// Create a stronger, clearer message
-	message := "TOO MANY FAILED PASSWORD ATTEMPTS"
-	timeMessage := fmt.Sprintf("LOCKED OUT FOR: %s", timeString)
-
-	// Clear the window by filling it with the background color
-	Debug("Clearing message window")
-	xproto.PolyFillRectangle(l.conn, xproto.Drawable(l.messageWindow), l.gc, []xproto.Rectangle{
-		{0, 0, 400, 100},
-	})
-
-	// Draw the main message with a specific font if available
-	// We're using the text graphics context (textGC) which is white
-	Debug("Drawing main message: %s", message)
-	xproto.ImageText8(l.conn, uint8(len(message)),
-		xproto.Drawable(l.messageWindow), l.textGC,
-		50, 40, // X, Y position within the window - more centered
-		message)
-
-	// Draw the time message below it - make it larger/more visible
-	Debug("Drawing time message: %s", timeMessage)
-	xproto.ImageText8(l.conn, uint8(len(timeMessage)),
-		xproto.Drawable(l.messageWindow), l.textGC,
-		85, 70, // X, Y position within the window - centered
-		timeMessage)
-
-	// Force a redraw/refresh
-	Debug("Clearing message window area to force refresh")
-	xproto.ClearArea(l.conn, true, l.messageWindow, 0, 0, 0, 0)
-
-	// Sync the X connection to ensure changes are sent to the server
-	Debug("Syncing X connection")
-	l.conn.Sync()
-
-	// Log for debugging
-	Info("Updated lockout timer: %s", timeString)
 }
 
 // drawPasswordUI draws the password entry UI
@@ -1103,11 +1055,13 @@ func (l *X11Locker) cleanup() {
 	Debug("Clearing password dots")
 	l.clearPasswordDots()
 
-	// Clear message window if it exists
-	if l.messageWindow != 0 {
-		Debug("Destroying message window")
-		xproto.DestroyWindow(l.conn, l.messageWindow)
-		l.messageWindow = 0
+	// Clear message windows if they exist
+	if len(l.messageWindows) > 0 {
+		Debug("Destroying message windows")
+		for _, window := range l.messageWindows {
+			xproto.DestroyWindow(l.conn, window)
+		}
+		l.messageWindows = []xproto.Window{}
 	}
 
 	// Stop media player
@@ -1134,102 +1088,4 @@ func (l *X11Locker) cleanup() {
 	}
 
 	Info("Cleanup completed")
-}
-
-// StartIdleMonitor implements idle monitoring functionality
-func (l *X11Locker) StartIdleMonitor() error {
-	Info("Starting idle monitor")
-	// Initialize X11 connection
-	Info("Creating new X connection for idle monitor")
-	conn, err := xgb.NewConn()
-	if err != nil {
-		Error("Failed to connect to X server for idle monitor: %v", err)
-		return fmt.Errorf("failed to connect to X server: %v", err)
-	}
-
-	// Initialize screensaver extension
-	Info("Initializing screensaver extension for idle monitor")
-	if err := screensaver.Init(conn); err != nil {
-		conn.Close()
-		Error("Failed to initialize screensaver extension: %v", err)
-		return fmt.Errorf("failed to initialize screensaver extension: %v", err)
-	}
-
-	// Create idle watcher
-	l.idleWatcher = &IdleWatcher{
-		conn:         conn,
-		timeout:      time.Duration(l.config.IdleTimeout) * time.Second,
-		stopChan:     make(chan struct{}),
-		parentLocker: l,
-	}
-
-	// Start watching in a goroutine
-	go l.idleWatcher.Watch()
-
-	Info("Idle monitor started (timeout: %d seconds)", l.config.IdleTimeout)
-	return nil
-}
-
-// StopIdleMonitor stops the idle monitoring
-func (l *X11Locker) StopIdleMonitor() {
-	Info("Stopping idle monitor")
-	if l.idleWatcher != nil {
-		Debug("Closing idle watcher stop channel")
-		close(l.idleWatcher.stopChan)
-		Debug("Closing idle watcher X connection")
-		l.idleWatcher.conn.Close()
-		l.idleWatcher = nil
-		Info("Idle monitor stopped")
-	} else {
-		Debug("No idle watcher to stop")
-	}
-}
-
-// Watch monitors for user inactivity
-func (w *IdleWatcher) Watch() {
-	Info("Idle watcher started, timeout: %v", w.timeout)
-	// Start a ticker to check idle time
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-w.stopChan:
-			Info("Idle watcher received stop signal")
-			return
-		case <-ticker.C:
-			// Query the idle time
-			Debug("Querying idle time")
-			info, err := screensaver.QueryInfo(w.conn, xproto.Drawable(xproto.Setup(w.conn).DefaultScreen(w.conn).Root)).Reply()
-			if err != nil {
-				Error("Error querying idle time: %v", err)
-				continue
-			}
-
-			// Convert to milliseconds to seconds
-			idleSeconds := time.Duration(info.MsSinceUserInput) * time.Millisecond
-			Debug("Current idle time: %v", idleSeconds)
-
-			// Check if we've reached the timeout
-			if idleSeconds >= w.timeout {
-				Info("Idle timeout reached (%v), locking screen", idleSeconds)
-
-				// Stop the watcher
-				close(w.stopChan)
-
-				// Lock the screen in a new goroutine to avoid deadlock
-				go func() {
-					Debug("Starting lock command in separate process")
-					// Use a clean lock command to avoid X server conflicts
-					cmd := exec.Command(os.Args[0], "--lock")
-					err := cmd.Start()
-					if err != nil {
-						Error("Failed to start lock command: %v", err)
-					}
-				}()
-
-				return
-			}
-		}
-	}
 }

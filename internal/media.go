@@ -179,17 +179,12 @@ func (mp *MediaPlayer) startPlaylistOnMonitor(monitor Monitor, monitorIdx int) e
 	geometry := fmt.Sprintf("%dx%d+%d+%d", monitor.Width, monitor.Height, monitor.X, monitor.Y)
 
 	// Create mpv command with playlist
-	playerCmd := mp.config.MediaPlayerCmd
-	if playerCmd == "" {
-		playerCmd = "mpv"
-	}
-
 	// Add a new option to get mpv to report the current file
 	// This will help us track what's playing on each monitor
 	ipcSocketPath := fmt.Sprintf("/tmp/fancylock-mpv-socket-%d", monitorIdx)
 	os.Remove(ipcSocketPath) // Remove any existing socket
 
-	cmd := exec.Command(playerCmd,
+	cmd := exec.Command("mpv",
 		"--no-input-default-bindings", // Disable default key bindings
 		"--really-quiet",              // No console output
 		"--no-stop-screensaver",       // Don't interfere with screensaver

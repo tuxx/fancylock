@@ -47,16 +47,14 @@ mkdir -p ~/.config/fancylock
 cat > ~/.config/fancylock/config.json << 'EOF'
 {
   "media_dir": "$HOME/Videos",
-  "lock_screen": false,
   "supported_extensions": [".mp4", ".mkv", ".mov", ".avi", ".webm"],
   "pam_service": "fancylock",
   "include_images": true,
   "image_display_time": 30,
-  "background_color": "#000000",
-  "blur_background": false,
-  "media_player_cmd": "mpv",
   "pre_lock_command": "",
-  "post_lock_command": ""
+  "post_lock_command": "",
+  "lock_pause_media": false,
+  "unlock_unpause_media": false
 }
 EOF
 ```
@@ -182,16 +180,14 @@ fancylock -c /path/to/config.json
 ```json
 {
   "media_dir": "/home/user/Videos",
-  "lock_screen": false,
   "supported_extensions": [".mp4", ".mkv", ".mov", ".avi", ".webm"],
   "pam_service": "fancylock",
   "include_images": true,
   "image_display_time": 30,
-  "background_color": "#000000",
-  "blur_background": false,
-  "media_player_cmd": "mpv",
   "pre_lock_command": "pypr hide mywindow",
-  "post_lock_command": "pypr show mywindow"
+  "post_lock_command": "pypr show mywindow",
+  "lock_pause_media": false,
+  "unlock_unpause_media": false
 }
 ```
 </details>
@@ -199,16 +195,14 @@ fancylock -c /path/to/config.json
 ### Configuration Options
 
 - `media_dir`: Directory containing videos/images to display while locked
-- `lock_screen`: Whether to lock the screen immediately on startup
 - `supported_extensions`: File extensions to look for in the media directory
 - `pam_service`: PAM service name for authentication
 - `include_images`: Whether to include images along with videos
 - `image_display_time`: How long to display each image in seconds
-- `media_player_cmd`: Command to use for playing media (default: mpv)
-- `pre_lock_command`: Execute this command before locking the screen.
-- `post_lock_command`: Execute this command after unlocking the screen.
-
-Note: The configuration also includes `background_color` and `blur_background` options, but these are not currently implemented.
+- `pre_lock_command`: Execute this command before locking the screen
+- `post_lock_command`: Execute this command after unlocking the screen
+- `lock_pause_media`: Whether to pause all media players when locking the screen
+- `unlock_unpause_media`: Whether to unpause all media players when unlocking the screen
 
 ## Current Status
 
@@ -222,25 +216,21 @@ Note: The configuration also includes `background_color` and `blur_background` o
 - ✅ Keyboard and pointer grabbing to prevent bypass
 - ✅ Failed password attempt limiting 
 - ✅ Embedded version metadata via `-v`
+- ✅ MPRIS media control (pause/unpause)
 
 ### What Needs Improvement
 
 - ⚠️ Error handling in some edge cases
-- ⚠️ Password entry UI could be more polished
 - ⚠️ Memory optimization for long-running sessions
 - ⚠️ Better handling of system sleep/wake events
 - ⚠️ Auto-creation of default config file (if none exists)
 
 ## Future Implementations
 
+- 🚧 Clock display in center of the screen
 - 🚧 Configurable UI theme and appearance
-- 🚧 Blurred background option
 - 🚧 More interactive lock screen elements
-- 🚧 Support for additional media players
-- 🚧 Screensaver mode with clock display
-- 🚧 Improved multi-head support (different videos per monitor)
 - 🚧 Systemd integration
-- 🚧 Implementation of background color and blur options
 - 🚧 Auto-generation of default config file
 
 ## Developer Setup

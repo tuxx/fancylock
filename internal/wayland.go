@@ -164,6 +164,14 @@ func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int, offs
 	}
 	defer syscall.Munmap(data) // Ensure memory mapping is cleaned up
 
+	// Fill with transparent color first
+	for i := 0; i < size; i += 4 {
+		data[i+0] = 0 // Blue
+		data[i+1] = 0 // Green
+		data[i+2] = 0 // Red
+		data[i+3] = 0 // Alpha (fully transparent)
+	}
+
 	// Much larger dots
 	dotSpacing := 40 // Increased spacing for larger dots
 	dotRadius := 12  // 4x the original size (was 3)
@@ -205,10 +213,15 @@ func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int, offs
 		return
 	}
 
+	// Set input region to nil to allow input through the transparent parts
+	surface.SetInputRegion(nil)
+
+	// Attach buffer to surface and commit
 	surface.Attach(buffer, 0, 0)
 	surface.Damage(0, 0, int32(width), int32(height))
-	surface.SetInputRegion(nil)
 	surface.Commit()
+
+	Debug("Drew password feedback dots: count=%d, offsetX=%d", count, offsetX)
 }
 
 func (l *WaylandLocker) shakePasswordDots() {
@@ -490,266 +503,56 @@ func (l *WaylandLocker) HandleSeatCapabilities(ev wl.SeatCapabilitiesEvent) {
 	}
 }
 
+// Lock implements the screen locking functionality
 func (l *WaylandLocker) Lock() error {
-	Debug("\n=== LOCK FUNCTION STARTED ===")
-	var err error
+	Info("Locking screen")
+	l.lockActive = true
 
 	// Run pre-lock command if configured
 	if err := l.helper.RunPreLockCommand(); err != nil {
-		Warn("Pre-lock command error: %v", err)
-		// Continue with locking even if the pre-lock command fails
+		Error("Failed to run pre-lock command: %v", err)
+		// Continue with locking despite the error
 	}
 
-	// 1. Connect to Wayland display
-	l.display, err = wlclient.DisplayConnect(nil)
-	if err != nil {
-		Debug("ERROR: Failed to connect to Wayland display")
-		return fmt.Errorf("connect to Wayland: %w", err)
-	}
-	Debug("OK: Connected to Wayland display")
-
-	// 2. Get registry and set up registry handler
-	l.registry, err = l.display.GetRegistry()
-	if err != nil {
-		Debug("ERROR: Failed to get registry")
-		return fmt.Errorf("get registry: %w", err)
-	}
-	Debug("OK: Got registry")
-
-	// Use a separate registry handler
-	regHandler := &RegistryHandler{
-		registry:         l.registry,
-		outputs:          make(map[uint32]*wl.Output),
-		outputGeometries: make(map[*wl.Output]outputInfo),
-	}
-	l.registryHandler = regHandler
-
-	// Add the registry handler
-	l.registry.AddGlobalHandler(regHandler)
-
-	// Process registry events
-	err = wlclient.DisplayRoundtrip(l.display)
-	if err != nil {
-		Debug("ERROR: Registry roundtrip failed")
-		return fmt.Errorf("registry roundtrip: %w", err)
-	}
-	Debug("OK: Registry roundtrip completed")
-
-	// Copy registry handler values to locker
-	l.compositor = regHandler.compositor
-	l.lockManager = regHandler.lockManager
-	l.shm = regHandler.shm
-	l.seat = regHandler.seat
-	for id, output := range regHandler.outputs {
-		l.outputs[id] = output
+	// Pause media if enabled
+	if err := l.helper.PauseMediaIfEnabled(); err != nil {
+		Error("Failed to pause media: %v", err)
+		// Continue with locking despite the error
 	}
 
-	// Check required interfaces
-	if l.compositor == nil {
-		Debug("ERROR: No compositor found")
-		return fmt.Errorf("no compositor found")
-	}
-	if l.shm == nil {
-		Debug("ERROR: No shared memory manager found")
-		return fmt.Errorf("no shared memory manager found")
-	}
-	if l.lockManager == nil {
-		Debug("ERROR: No session lock manager found")
-		return fmt.Errorf("no session lock manager found")
+	// Initialize Wayland connection
+	if err := l.initWayland(); err != nil {
+		Error("Failed to initialize Wayland: %v", err)
+		return err
 	}
 
-	// 3. Create session lock with extra safety
-	Debug("Creating session lock...")
-	Debug("Lock manager details: %+v", l.lockManager)
-	Debug("Lock manager ID: %d", l.lockManager.Id())
-
-	// Use panic recovery to handle potential issues
-	var lockErr error
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				lockErr = fmt.Errorf("panic in lock creation: %v", r)
-				Debug("Recovered from panic in lock creation: %v", r)
-			}
-		}()
-		l.lock, err = l.lockManager.Lock()
-		if err != nil {
-			lockErr = err
-		}
-	}()
-
-	if lockErr != nil {
-		Debug("ERROR: Failed to create session lock: %v", lockErr)
-		return fmt.Errorf("failed to create session lock: %v", lockErr)
-	}
-
-	Debug("OK: Created session lock with ID: %d", l.lock.Id())
-
-	// 4. Add lock listener
-	ext.SessionLockAddListener(l.lock, l)
-	Debug("OK: Added session lock listener")
-
-	err = wlclient.DisplayRoundtrip(l.display)
-	if err != nil {
-		Debug("ERROR: Lock roundtrip failed")
-		return fmt.Errorf("lock roundtrip failed: %w", err)
-	}
-
-	// 5. Create surfaces for each output
-	Info("Creating %d lock surfaces...\n", len(l.outputs))
-	for id, output := range l.outputs {
-		Info("Creating surface for output %d...\n", id)
-
-		// Create surface with error handling
-		s, aerr := l.compositor.CreateSurface()
-		if aerr != nil {
-			Debug("ERROR: Failed to create surface for output %d: %v", id, aerr)
-			return fmt.Errorf("failed to create surface: %w", aerr)
-		}
-		Info("Surface created with ID: %d\n", s.Id())
-
-		// Create lock surface with error handling
-		var lockSurface *ext.SessionLockSurface
-		var berr error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					berr = fmt.Errorf("panic in lock surface creation: %v", r)
-					Debug("Recovered from panic in lock surface creation: %v", r)
-				}
-			}()
-			lockSurface, berr = l.lock.GetLockSurface(s, output)
-		}()
-
-		if berr != nil {
-			Debug("ERROR: Failed to get lock surface for output %d: %v", id, berr)
-			return fmt.Errorf("failed to get lock surface: %w", berr)
-		}
-		Info("Lock surface created with ID: %d\n", lockSurface.Id())
-
-		// Add listener
-		ext.SessionLockSurfaceAddListener(lockSurface, &surfaceHandler{
-			client:      l,
-			surface:     s,
-			lockSurface: lockSurface,
-		})
-
-		l.surfaces[output] = struct {
-			wlSurface   *wl.Surface
-			lockSurface *ext.SessionLockSurface
-		}{
-			wlSurface:   s,
-			lockSurface: lockSurface,
-		}
-
-		Info("OK: Created lock surface for output %d\n", id)
-	}
-
-	// 6. Process surfaces with a roundtrip
-	err = wlclient.DisplayRoundtrip(l.display)
-	if err != nil {
-		Debug("ERROR: Surfaces roundtrip failed")
-		return fmt.Errorf("surfaces roundtrip failed: %w", err)
-	}
-
-	// NOW set up monitors for media player AFTER lock is established
-	Debug("Setting up media player after lock is established...")
-	var monitors []Monitor
-	for _, output := range l.registryHandler.outputs {
-		info, ok := l.registryHandler.outputGeometries[output]
-		if !ok {
-			continue
-		}
-		monitors = append(monitors, Monitor{
-			X:      info.x,
-			Y:      info.y,
-			Width:  info.width,
-			Height: info.height,
-		})
-	}
-
-	l.mediaPlayer.SetMonitors(monitors)
-	if merr := l.mediaPlayer.Start(); merr != nil {
-		Warn("Failed to start media player: %v", merr)
-	}
-
-	// 7. NOW set up keyboard handlers (after surfaces are set up)
-	Debug("Setting up keyboard handlers...")
-	if l.seat != nil {
-		var keyboard *wl.Keyboard
-		var kberr error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					kberr = fmt.Errorf("panic in keyboard setup: %v", r)
-					Debug("Recovered from panic in keyboard setup: %v", r)
-				}
-			}()
-			keyboard, kberr = l.seat.GetKeyboard()
-		}()
-
-		if kberr != nil {
-			Debug("WARNING: Failed to get keyboard: %v", kberr)
-			// Continue without keyboard - not fatal
-		} else if keyboard != nil {
-			l.keyboard = keyboard
-			l.keyboard.AddKeyHandler(l)
-			l.keyboard.AddEnterHandler(l)
-			l.keyboard.AddLeaveHandler(l)
-			l.keyboard.AddKeymapHandler(l)
-			l.keyboard.AddModifiersHandler(l)
-			Debug("OK: Keyboard handlers added")
+	// Start the media player if configured
+	if l.mediaPlayer != nil {
+		if err := l.mediaPlayer.Start(); err != nil {
+			Error("Failed to start media player: %v", err)
+			// Continue with locking despite the error
 		}
 	}
 
-	// 8. Process keyboard with another roundtrip
-	err = wlclient.DisplayRoundtrip(l.display)
-	if err != nil {
-		Debug("WARNING: Keyboard handlers roundtrip failed: %v", err)
-		// Continue anyway - keyboard isn't critical
-	}
-
-	// Start password UI feedback handler
+	// Start redraw goroutine for password dots
 	go func() {
-		var redrawTimer *time.Timer
-		for length := range l.redrawCh {
-			if redrawTimer != nil {
-				redrawTimer.Stop()
-			}
-			redrawTimer = time.AfterFunc(50*time.Millisecond, func() {
-				for _, entry := range l.surfaces {
-					drawPasswordFeedback(l, entry.wlSurface, length, 0)
-				}
-			})
-		}
-	}()
-
-	Debug("ALL SETUP COMPLETE - Entering event loop...")
-
-	// Event loop
-	go func() {
-		Debug("Event loop started in goroutine")
 		for {
 			select {
 			case <-l.done:
-				Debug("Event loop received done signal")
 				return
-			default:
-				dispErr := wlclient.DisplayDispatch(l.display)
-				if dispErr != nil {
-					Info("ERROR in event loop: %v\n", dispErr)
-					close(l.done)
-					return
+			case count := <-l.redrawCh:
+				Debug("Redrawing password dots: count=%d", count)
+				for _, entry := range l.surfaces {
+					if entry.wlSurface != nil {
+						drawPasswordFeedback(l, entry.wlSurface, count, 0)
+					}
 				}
-				time.Sleep(10 * time.Millisecond)
 			}
 		}
 	}()
 
-	// Wait for unlock signal
-	Debug("Main function waiting for unlock...")
+	// Wait for lock to complete
 	<-l.done
-	Debug("Received unlock signal, exiting")
 
 	return nil
 }
@@ -783,6 +586,11 @@ func (l *WaylandLocker) authenticate() {
 			if l.mediaPlayer != nil {
 				Debug("Stopping media player")
 				l.mediaPlayer.Stop()
+			}
+
+			// Unpause media if enabled
+			if err := l.helper.UnpauseMediaIfEnabled(); err != nil {
+				Warn("Failed to unpause media: %v", err)
 			}
 
 			time.Sleep(200 * time.Millisecond)
@@ -1133,4 +941,154 @@ func (l *WaylandLocker) getSurfaceDimensions(surface *wl.Surface) (width, height
 	}
 
 	return
+}
+
+// initWayland initializes the Wayland connection and resources
+func (l *WaylandLocker) initWayland() error {
+	// Connect to Wayland display
+	conn, err := wlclient.DisplayConnect(nil)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Wayland display: %w", err)
+	}
+	l.display = conn
+
+	// Get registry and set up registry handler
+	registry, err := conn.GetRegistry()
+	if err != nil {
+		return fmt.Errorf("failed to get registry: %w", err)
+	}
+
+	// Use a separate registry handler
+	regHandler := &RegistryHandler{
+		registry:         registry,
+		outputs:          make(map[uint32]*wl.Output),
+		outputGeometries: make(map[*wl.Output]outputInfo),
+	}
+	l.registryHandler = regHandler
+
+	// Add the registry handler
+	registry.AddGlobalHandler(regHandler)
+
+	// Process registry events
+	err = wlclient.DisplayRoundtrip(conn)
+	if err != nil {
+		return fmt.Errorf("failed to process registry events: %w", err)
+	}
+
+	// Copy registry handler values to locker
+	l.compositor = regHandler.compositor
+	l.lockManager = regHandler.lockManager
+	l.shm = regHandler.shm
+	l.seat = regHandler.seat
+	for id, output := range regHandler.outputs {
+		l.outputs[id] = output
+	}
+
+	// Check required interfaces
+	if l.compositor == nil || l.shm == nil || l.lockManager == nil {
+		return fmt.Errorf("missing required Wayland interfaces")
+	}
+
+	// Create session lock
+	lock, err := l.lockManager.Lock()
+	if err != nil {
+		return fmt.Errorf("failed to create session lock: %w", err)
+	}
+	l.lock = lock
+
+	// Add lock listener
+	ext.SessionLockAddListener(lock, l)
+
+	// Process lock creation
+	err = wlclient.DisplayRoundtrip(conn)
+	if err != nil {
+		return fmt.Errorf("failed to process lock creation: %w", err)
+	}
+
+	// Create surfaces for each output
+	for _, output := range l.outputs {
+		// Create surface
+		s, err := l.compositor.CreateSurface()
+		if err != nil {
+			return fmt.Errorf("failed to create surface: %w", err)
+		}
+
+		// Create lock surface
+		lockSurface, err := l.lock.GetLockSurface(s, output)
+		if err != nil {
+			return fmt.Errorf("failed to get lock surface: %w", err)
+		}
+
+		// Add listener
+		ext.SessionLockSurfaceAddListener(lockSurface, &surfaceHandler{
+			client:      l,
+			surface:     s,
+			lockSurface: lockSurface,
+		})
+
+		l.surfaces[output] = struct {
+			wlSurface   *wl.Surface
+			lockSurface *ext.SessionLockSurface
+		}{
+			wlSurface:   s,
+			lockSurface: lockSurface,
+		}
+	}
+
+	// Process surface creation
+	err = wlclient.DisplayRoundtrip(conn)
+	if err != nil {
+		return fmt.Errorf("failed to process surface creation: %w", err)
+	}
+
+	// Set up keyboard handlers
+	if l.seat != nil {
+		keyboard, err := l.seat.GetKeyboard()
+		if err == nil && keyboard != nil {
+			l.keyboard = keyboard
+			l.keyboard.AddKeyHandler(l)
+			l.keyboard.AddEnterHandler(l)
+			l.keyboard.AddLeaveHandler(l)
+			l.keyboard.AddKeymapHandler(l)
+			l.keyboard.AddModifiersHandler(l)
+		}
+	}
+
+	// Process keyboard setup
+	err = wlclient.DisplayRoundtrip(conn)
+	if err != nil {
+		// Continue anyway - keyboard isn't critical
+		Error("Failed to process keyboard setup: %v", err)
+	}
+
+	// Set up monitor information for media player
+	var monitors []Monitor
+	for _, info := range regHandler.outputGeometries {
+		monitors = append(monitors, Monitor{
+			X:      info.x,
+			Y:      info.y,
+			Width:  info.width,
+			Height: info.height,
+		})
+	}
+	l.mediaPlayer.SetMonitors(monitors)
+
+	// Start event loop
+	go func() {
+		for {
+			select {
+			case <-l.done:
+				return
+			default:
+				if err := wlclient.DisplayDispatch(conn); err != nil {
+					Error("Failed to dispatch Wayland events: %v", err)
+					close(l.done)
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	}()
+
+	return nil
 }

@@ -87,9 +87,11 @@ func (a *PamAuthenticator) Authenticate(password string) AuthResult {
 	}
 }
 
+// LockHelper handles screen locking operations
 type LockHelper struct {
 	authenticator *PamAuthenticator
 	config        Configuration
+	mediaCtrl     *MediaController
 }
 
 // NewLockHelper creates a new helper instance with the given configuration
@@ -99,9 +101,25 @@ func NewLockHelper(config Configuration) *LockHelper {
 		username:    os.Getenv("USER"),
 	}
 
+	var mediaCtrl *MediaController
+	if config.LockPauseMedia || config.UnlockUnpauseMedia {
+		Debug("Media control is enabled, initializing media controller")
+		var err error
+		mediaCtrl, err = NewMediaController()
+		if err != nil {
+			// Log error but continue without media control
+			Error("Failed to initialize media controller: %v", err)
+		} else {
+			Debug("Media controller initialized successfully")
+		}
+	} else {
+		Debug("Media control is disabled, skipping media controller initialization")
+	}
+
 	return &LockHelper{
 		authenticator: auth,
 		config:        config,
+		mediaCtrl:     mediaCtrl,
 	}
 }
 
@@ -165,18 +183,6 @@ func (h *LockHelper) DisableVTs() func() {
 	return func() {
 		// Re-enable VTs
 	}
-}
-
-// BlurBackground blurs the screen contents if enabled in config
-func (h *LockHelper) BlurBackground() ([]byte, error) {
-	if !h.config.BlurBackground {
-		return nil, nil
-	}
-
-	// This would typically capture the screen and apply a blur
-	// Returns the blurred screenshot data
-
-	return nil, nil
 }
 
 // EnsureSingleInstance makes sure only one instance of the locker is running
@@ -265,4 +271,43 @@ func (p *SecurePassword) Length() int {
 // runShellCommand executes a shell command string
 func runShellCommand(cmd string) error {
 	return exec.Command("sh", "-c", strings.TrimSpace(cmd)).Run()
+}
+
+// PauseMediaIfEnabled pauses all media if enabled in config
+func (h *LockHelper) PauseMediaIfEnabled() error {
+	if !h.config.LockPauseMedia {
+		Debug("LockPauseMedia is disabled in config, skipping media pause")
+		return nil
+	}
+
+	if h.mediaCtrl == nil {
+		Error("LockPauseMedia is enabled but media controller is not initialized")
+		return nil
+	}
+
+	Debug("Pausing all media players")
+	return h.mediaCtrl.PauseAllMedia()
+}
+
+// UnpauseMediaIfEnabled unpauses all media if enabled in config
+func (h *LockHelper) UnpauseMediaIfEnabled() error {
+	if !h.config.UnlockUnpauseMedia {
+		Debug("UnlockUnpauseMedia is disabled in config, skipping media unpause")
+		return nil
+	}
+
+	if h.mediaCtrl == nil {
+		Error("UnlockUnpauseMedia is enabled but media controller is not initialized")
+		return nil
+	}
+
+	Debug("Unpausing all media players")
+	return h.mediaCtrl.UnpauseAllMedia()
+}
+
+// Close cleans up resources
+func (h *LockHelper) Close() {
+	if h.mediaCtrl != nil {
+		h.mediaCtrl.Close()
+	}
 }

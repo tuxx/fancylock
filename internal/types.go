@@ -3,7 +3,6 @@ package internal
 import (
 	"os/exec"
 	"sync"
-	"time"
 
 	"github.com/BurntSushi/xgb"
 	"github.com/BurntSushi/xgb/xproto"
@@ -18,14 +17,6 @@ type Monitor struct {
 	Y      int
 	Width  int
 	Height int
-}
-
-// IdleWatcher monitors user activity
-type IdleWatcher struct {
-	conn         *xgb.Conn
-	timeout      time.Duration
-	stopChan     chan struct{}
-	parentLocker *X11Locker
 }
 
 // X11Locker implements the ScreenLocker interface for X11
@@ -43,10 +34,9 @@ type X11Locker struct {
 	isLocked       bool
 	passwordDots   []bool // true for filled, false for empty
 	maxDots        int
-	idleWatcher    *IdleWatcher
 	dotWindows     []xproto.Window // Track password dot windows
 	lockoutManager *LockoutManager // Use the shared lockout manager
-	messageWindow  xproto.Window   // Window for displaying lockout messages
+	messageWindows []xproto.Window // Windows for displaying lockout messages on each monitor
 	textGC         xproto.Gcontext // Graphics context for drawing text
 }
 
@@ -95,9 +85,6 @@ type Configuration struct {
 	// List of supported file extensions for media files
 	SupportedExt []string `json:"supported_extensions"`
 
-	// Idle timeout in seconds before auto-locking
-	IdleTimeout int `json:"idle_timeout"`
-
 	// PAM service name to use for authentication
 	PamService string `json:"pam_service"`
 
@@ -107,15 +94,6 @@ type Configuration struct {
 	// How long to display each image in seconds (if static media is used)
 	ImageDisplayTime int `json:"image_display_time"`
 
-	// Background color (in hex format) for the lock screen
-	BackgroundColor string `json:"background_color"`
-
-	// Whether to blur background before locking
-	BlurBackground bool `json:"blur_background"`
-
-	// External player command to use (like mpv)
-	MediaPlayerCmd string `json:"media_player_cmd"`
-
 	// Enable debug exit with ESC or Q key
 	DebugExit bool `json:"debug_exit"`
 
@@ -124,15 +102,18 @@ type Configuration struct {
 
 	// Command to run after unlocking the screen
 	PostLockCommand string `json:"post_lock_command"`
+
+	// Whether to pause all media players when locking the screen
+	LockPauseMedia bool `json:"lock_pause_media"`
+
+	// Whether to unpause all media players when unlocking the screen
+	UnlockUnpauseMedia bool `json:"unlock_unpause_media"`
 }
 
 // ScreenLocker interface defines methods that any screen locker should implement
 type ScreenLocker interface {
 	// Lock immediately locks the screen
 	Lock() error
-
-	// StartIdleMonitor starts monitoring for user inactivity and locks after the timeout
-	StartIdleMonitor() error
 }
 
 // AuthResult represents the result of an authentication attempt
@@ -180,13 +161,6 @@ type WaylandBuffer struct {
 	buffer  *wl.Buffer
 	shmData []byte
 	busy    bool
-}
-
-// WaylandIdleWatcher monitors user activity on Wayland
-type WaylandIdleWatcher struct {
-	timeout      time.Duration
-	stopChan     chan struct{}
-	parentLocker *WaylandLocker
 }
 
 // surfaceHandler handles Wayland surface events

@@ -1,5 +1,7 @@
 github.com/BurntSushi/xgb v0.0.0-20210121224620-deaf085860bc h1:7D+Bh06CRPCJO3gr2F7h1sriovOZ8BMhca2Rg85c2nk=
 github.com/BurntSushi/xgb v0.0.0-20210121224620-deaf085860bc/go.mod h1:IVnqGOEym/WlBOVXweHU+Q+/VP0lqqI8lqeDx9IjBqo=
+github.com/godbus/dbus/v5 v5.1.0 h1:4KLkAxT3aOY8Li4FRJe/KvhoNFFxo0m6fNuFUO8QJUk=
+github.com/godbus/dbus/v5 v5.1.0/go.mod h1:xhWf0FNVPg57R7Z0UbKHbJfkEywrmjJnf7w5xrFpKfA=
 github.com/msteinert/pam v1.2.0 h1:mYfjlvN2KYs2Pb9G6nb/1f/nPfAttT/Jee5Sq9r3bGE=
 github.com/msteinert/pam v1.2.0/go.mod h1:d2n0DCUK8rGecChV3JzvmsDjOY4R7AYbsNxAT+ftQl0=
 github.com/neurlang/wayland v0.2.1 h1:/krK1Flt6VMCj/+KgEYhbm27fkYYEDGkiF1IzNlO43E=
