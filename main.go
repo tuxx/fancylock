@@ -3,10 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	il "github.com/tuxx/fancylock/internal"
 	"log"
 	"os"
 	"path/filepath"
+
+	il "github.com/tuxx/fancylock/internal"
 )
 
 func main() {
@@ -19,28 +20,26 @@ func main() {
 
 	helpFlag := flag.Bool("h", false, "Display help information")
 	flag.BoolVar(helpFlag, "help", false, "Display help information")
+
 	debugExit := flag.Bool("debug-exit", false, "Enable exit with ESC or Q key (for debugging)")
-
-	// Add debug mode flag
 	debugMode := flag.Bool("log", false, "Enable debug logging")
-
 	flagVersion := flag.Bool("v", false, "Show version info")
+	flag.BoolVar(flagVersion, "version", false, "Show version info")
 
 	// Set custom usage output
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "FancyLock: A media-playing screen locker\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "  -c, --config string\n    	Path to configuration file\n")
+		fmt.Fprintf(os.Stderr, "  -l, --lock\n    	Lock the screen immediately\n")
+		fmt.Fprintf(os.Stderr, "  -h, --help\n    	Display help information\n")
+		fmt.Fprintf(os.Stderr, "  --debug-exit\n    	Enable exit with ESC or Q key (for debugging)\n")
+		fmt.Fprintf(os.Stderr, "  --log\n    	Enable debug logging\n")
+		fmt.Fprintf(os.Stderr, "  -v, --version\n    	Show version info\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  %s -l                   # Lock screen immediately\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s -c /path/to/config   # Use specific config file\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "\nConfiguration Options (in config.json):\n")
-		fmt.Fprintf(os.Stderr, "  pre_lock_command:      Command to run before locking the screen\n")
-		fmt.Fprintf(os.Stderr, "  post_lock_command:     Command to run after unlocking the screen\n")
-		fmt.Fprintf(os.Stderr, "\nExample pre/post-lock commands:\n")
-		fmt.Fprintf(os.Stderr, "  pre_lock_command:  \"notify-send 'Locking screen in 5 seconds' && sleep 5\"\n")
-		fmt.Fprintf(os.Stderr, "  post_lock_command: \"xset dpms force on && notify-send 'Welcome back!'\"\n")
 	}
 
 	flag.Parse()

@@ -153,14 +153,27 @@ Lock your screen immediately:
 ```bash
 fancylock -l
 # or
-fancylock -lock
+fancylock --lock
 ```
 
 Check version info:
 
 ```bash
 fancylock -v
+# or
+fancylock --version
 ```
+
+### Command-line Options
+
+| Short | Long | Description |
+|-------|------|-------------|
+| `-c` | `--config` | Path to configuration file |
+| `-l` | `--lock` | Lock the screen immediately |
+| `-h` | `--help` | Display help information |
+| | `--debug-exit` | Enable exit with ESC or Q key (for debugging) |
+| | `--log` | Enable debug logging |
+| `-v` | `--version` | Show version info |
 
 ### Configuration
 
@@ -170,6 +183,8 @@ You can specify a different configuration file using:
 
 ```bash
 fancylock -c /path/to/config.json
+# or
+fancylock --config /path/to/config.json
 ```
 
 ### Sample Configuration
