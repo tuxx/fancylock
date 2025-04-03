@@ -1,24 +1,4 @@
 #%PAM-1.0
 # /etc/pam.d/fancylock - PAM configuration for fancylock screen locker
-
-# Load environment variables from /etc/environment and /etc/security/pam_env.conf
-auth       required   pam_env.so
-
-# Check that the account is not locked or expired
-auth       required   pam_unix.so try_first_pass
-
-# Check additional modules like LDAP or Kerberos if configured
-# auth    optional   pam_ldap.so try_first_pass
-# auth    optional   pam_krb5.so try_first_pass
-
-# No root login if /etc/nologin exists
-account    required   pam_nologin.so
-
-# Basic account checks
-account    required   pam_unix.so
-
-# Set up user limits (e.g., for ulimits)
-session    required   pam_limits.so
-
-# Standard Unix session setup
-session    required   pam_unix.so
+auth    required pam_unix.so nodelay
+account required pam_unix.so
