@@ -1224,6 +1224,6 @@ func (l *WaylandLocker) handleChar(r rune) {
 		case l.redrawCh <- l.securePassword.Length():
 		default:
 		}
-		Debug("Character '%c' (U+%04X) added to password", r, r)
+		//Debug("Character '%c' (U+%04X) added to password", r, r) // Let's not output password characters to any log.
 	}
 }
