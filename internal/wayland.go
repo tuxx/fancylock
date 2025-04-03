@@ -179,8 +179,7 @@ func (l *WaylandLocker) HandleKeyboardModifiers(ev wl.KeyboardModifiersEvent) {
 }
 
 func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int, offsetX int) {
-	width := uint32(3840)
-	height := uint32(2160)
+	width, height := l.getSurfaceDimensions(surface)
 	stride := int(width) * 4
 	size := stride * int(height)
 
@@ -1003,9 +1002,7 @@ func clearMessage(surface *wl.Surface, l *WaylandLocker) {
 		return
 	}
 
-	// Use safe defaults for width/height
-	width := 3840
-	height := 2160
+	width, height := l.getSurfaceDimensions(surface)
 
 	stride := width * 4
 	size := stride * height
@@ -1063,23 +1060,7 @@ func safeCenteredMessage(surface *wl.Surface, l *WaylandLocker, message string, 
 		return
 	}
 
-	// Use safe defaults for width/height
-	width := 3840
-	height := 2160
-
-	// Try to get actual dimensions instead
-	for output, entry := range l.surfaces {
-		if entry.wlSurface == surface {
-			// Find this output in geometries
-			if l.registryHandler != nil && l.registryHandler.outputGeometries != nil {
-				if info, ok := l.registryHandler.outputGeometries[output]; ok {
-					width = info.width
-					height = info.height
-				}
-			}
-			break
-		}
-	}
+	width, height := l.getSurfaceDimensions(surface)
 
 	// Format time in mm:ss format
 	minutes := secondsLeft / 60
@@ -1189,4 +1170,36 @@ func safeCenteredMessage(surface *wl.Surface, l *WaylandLocker, message string, 
 	surface.Attach(buffer, 0, 0)
 	surface.Damage(0, 0, int32(width), int32(height))
 	surface.Commit()
+}
+
+// getSurfaceDimensions returns the width and height for a given surface
+// If dimensions can't be determined, returns reasonable minimum values
+func (l *WaylandLocker) getSurfaceDimensions(surface *wl.Surface) (width, height int) {
+	// Set minimum reasonable dimensions as absolute fallback
+	width = 640
+	height = 480
+
+	// Try to get actual dimensions
+	for output, entry := range l.surfaces {
+		if entry.wlSurface == surface {
+			if l.registryHandler != nil && l.registryHandler.outputGeometries != nil {
+				if info, ok := l.registryHandler.outputGeometries[output]; ok {
+					width = info.width
+					height = info.height
+					return
+				}
+			}
+			break
+		}
+	}
+
+	// If we couldn't get dimensions from the registry, try to get them from the compositor
+	if surface != nil {
+		// Many Wayland compositors provide a configure event with dimensions
+		// This would be handled in the surface's configure callback
+		// For now, we'll log that we're using minimum dimensions
+		Error("Could not determine surface dimensions, using minimum values: %dx%d", width, height)
+	}
+
+	return
 }
