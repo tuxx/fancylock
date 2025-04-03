@@ -13,6 +13,7 @@ require (
 )
 
 require (
+	github.com/ebitengine/purego v0.8.2 // indirect
 	github.com/yalue/native_endian v1.0.2 // indirect
 	golang.org/x/text v0.23.0 // indirect
 )
