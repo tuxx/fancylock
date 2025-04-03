@@ -131,6 +131,53 @@ func (l *WaylandLocker) HandleKeyboardLeave(ev wl.KeyboardLeaveEvent) {
 // Handle keyboard keymap events
 func (l *WaylandLocker) HandleKeyboardKeymap(ev wl.KeyboardKeymapEvent) {
 	Info("Keyboard keymap event received: format=%d, size=%d\n", ev.Format, ev.Size)
+
+	// Store keymap information
+	l.keymapFormat = ev.Format
+	l.keymapSize = ev.Size
+
+	// Read the keymap data
+	if ev.Fd != 0 {
+		data, err := syscall.Mmap(int(ev.Fd), 0, int(ev.Size), syscall.PROT_READ, syscall.MAP_SHARED)
+		if err != nil {
+			Error("Failed to mmap keymap: %v", err)
+			return
+		}
+		defer syscall.Munmap(data)
+
+		// Copy the keymap data
+		l.keymapData = make([]byte, ev.Size)
+		copy(l.keymapData, data)
+
+		// Initialize XKB context if not already done
+		if l.xkbContext == 0 {
+			l.xkbContext = XkbContextNew(ContextNoFlags)
+			if l.xkbContext == 0 {
+				Error("Failed to create XKB context")
+				return
+			}
+		}
+
+		// Create XKB keymap from the keymap data
+		if l.xkbKeymap != 0 {
+			XkbKeymapUnref(l.xkbKeymap)
+		}
+		l.xkbKeymap = XkbKeymapNewFromString(l.xkbContext, string(l.keymapData), KeymapFormatTextV1, ContextNoFlags)
+		if l.xkbKeymap == 0 {
+			Error("Failed to create XKB keymap")
+			return
+		}
+
+		// Create XKB state
+		if l.xkbState != 0 {
+			XkbStateUnref(l.xkbState)
+		}
+		l.xkbState = XkbStateNew(l.xkbKeymap)
+		if l.xkbState == 0 {
+			Error("Failed to create XKB state")
+			return
+		}
+	}
 }
 
 // Handle keyboard modifier events
@@ -272,82 +319,85 @@ func (l *WaylandLocker) shakePasswordDots() {
 	}
 }
 
+// Handle keyboard key events
 func (l *WaylandLocker) HandleKeyboardKey(ev wl.KeyboardKeyEvent) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if ev.State != 1 {
+	// Only handle key press events
+	if ev.State != wl.KeyboardKeyStatePressed {
 		return
 	}
 
+	// If countdown is active, ignore all keys except Escape
 	if l.countdownActive {
-		// Only handle key if it's ESC and debug exit is enabled
-		if ev.Key == 1 && l.config.DebugExit {
-			Info("ESC pressed during countdown, triggering debug exit\n")
-			if l.lock != nil {
-				l.lock.UnlockAndDestroy()
+		if ev.Key == 1 { // Escape key
+			l.countdownActive = false
+			l.countdownTimer.Stop()
+			l.securePassword.Clear()
+			if l.config.DebugExit {
+				Info("ESC pressed during countdown, triggering debug exit\n")
+				if l.lock != nil {
+					l.lock.UnlockAndDestroy()
+				}
+				close(l.done)
 			}
-			close(l.done)
 		}
-
-		// Ignore all other keys while countdown is active
 		return
 	}
 
-	charAdded := false
-
+	// Handle special keys
 	switch ev.Key {
-	case 1: // Escape
+	case 1: // Escape key
 		Info("ESC pressed, clearing password\n")
 		l.securePassword.Clear()
-		charAdded = true
 		if l.config.DebugExit {
 			Info("Debug exit triggered by ESC key\n")
 			if l.lock != nil {
 				l.lock.UnlockAndDestroy()
 			}
 			close(l.done)
-			return
 		}
-	case 28, 96, 108, 65: // Enter
+		return
+	case 28: // Enter key
 		Info("ENTER key detected (code=%d), authenticating\n", ev.Key)
 		l.authenticate()
 		return
-	case 14: // Backspace
+	case 14: // Backspace key
 		Info("BACKSPACE pressed, removing last character\n")
 		l.securePassword.RemoveLast()
-		charAdded = true
-	default:
-		if ev.Key >= 2 && ev.Key <= 11 {
-			if ev.Key == 11 {
-				l.securePassword.Append('0')
-			} else {
-				l.securePassword.Append('1' + byte(ev.Key-2))
-			}
-			charAdded = true
-		} else if ev.Key >= 16 && ev.Key <= 25 {
-			chars := []byte{'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'}
-			l.securePassword.Append(chars[ev.Key-16])
-			charAdded = true
-		} else if ev.Key >= 30 && ev.Key <= 38 {
-			chars := []byte{'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'}
-			l.securePassword.Append(chars[ev.Key-30])
-			charAdded = true
-		} else if ev.Key >= 44 && ev.Key <= 50 {
-			chars := []byte{'z', 'x', 'c', 'v', 'b', 'n', 'm'}
-			l.securePassword.Append(chars[ev.Key-44])
-			charAdded = true
-		} else {
-			Info("Unhandled key: %d\n", ev.Key)
-		}
-	}
-
-	if charAdded {
 		select {
 		case l.redrawCh <- l.securePassword.Length():
 		default:
 		}
+		return
 	}
+
+	// Convert key code to character using XKB state
+	if l.xkbState != 0 && l.xkbKeymap != 0 {
+		// Get the key symbol
+		sym := XkbStateKeyGetSym(l.xkbState, ev.Key+8) // Add 8 to convert from evdev to XKB keycode
+		if sym != 0 {
+			// Convert the key symbol to a character
+			utf32 := XkbKeysymToUtf32(sym)
+			if utf32 != 0 {
+				// Convert UTF-32 to UTF-8
+				r := rune(utf32)
+				if r >= 0x20 && r <= 0x7e { // Printable ASCII range
+					l.securePassword.Append(byte(r))
+					select {
+					case l.redrawCh <- l.securePassword.Length():
+					default:
+					}
+					//Debug("Key %d mapped to character '%c' (keysym: 0x%x)", ev.Key, r, sym)
+					return
+				}
+			}
+		}
+	}
+
+	// Log unhandled keys
+	Debug("Unhandled key: code=%d, state=%d", ev.Key, ev.State)
 }
 
 func (l *WaylandLocker) HandleSessionLockLocked(ev ext.SessionLockLockedEvent) {
@@ -378,6 +428,21 @@ func (f outputModeHandlerFunc) HandleOutputMode(ev wl.OutputModeEvent) {
 	f(ev)
 }
 
+// HandleRegistryGlobalRemove handles registry global remove events
+func (h *RegistryHandler) HandleRegistryGlobalRemove(ev wl.RegistryGlobalRemoveEvent) {
+	// Remove the output from our map if it exists
+	if output, ok := h.outputs[ev.Name]; ok {
+		delete(h.outputs, ev.Name)
+		delete(h.outputGeometries, output)
+	}
+}
+
+// HandleKeyboardRepeatInfo handles keyboard repeat info events
+func (l *WaylandLocker) HandleKeyboardRepeatInfo(ev wl.KeyboardRepeatInfoEvent) {
+	// We don't need to handle keyboard repeat info for our use case
+}
+
+// HandleRegistryGlobal handles registry global events
 func (h *RegistryHandler) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 	switch ev.Interface {
 	case "wl_compositor":
@@ -404,10 +469,6 @@ func (h *RegistryHandler) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 		}
 
 		// Add handlers for output geometry and mode
-		if h.outputGeometries == nil {
-			h.outputGeometries = make(map[*wl.Output]outputInfo)
-		}
-
 		output.AddGeometryHandler(struct{ wl.OutputGeometryHandler }{
 			OutputGeometryHandler: handlerFunc(func(ev wl.OutputGeometryEvent) {
 				info := h.outputGeometries[output]
@@ -953,7 +1014,7 @@ func (l *WaylandLocker) initWayland() error {
 	l.display = conn
 
 	// Get registry and set up registry handler
-	registry, err := conn.GetRegistry()
+	registry, err := wlclient.DisplayGetRegistry(conn)
 	if err != nil {
 		return fmt.Errorf("failed to get registry: %w", err)
 	}
@@ -967,7 +1028,7 @@ func (l *WaylandLocker) initWayland() error {
 	l.registryHandler = regHandler
 
 	// Add the registry handler
-	registry.AddGlobalHandler(regHandler)
+	wlclient.RegistryAddListener(registry, regHandler)
 
 	// Process registry events
 	err = wlclient.DisplayRoundtrip(conn)
@@ -1046,11 +1107,7 @@ func (l *WaylandLocker) initWayland() error {
 		keyboard, err := l.seat.GetKeyboard()
 		if err == nil && keyboard != nil {
 			l.keyboard = keyboard
-			l.keyboard.AddKeyHandler(l)
-			l.keyboard.AddEnterHandler(l)
-			l.keyboard.AddLeaveHandler(l)
-			l.keyboard.AddKeymapHandler(l)
-			l.keyboard.AddModifiersHandler(l)
+			wlclient.KeyboardAddListener(keyboard, l)
 		}
 	}
 

@@ -3,6 +3,7 @@ package internal
 import (
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/xgb"
 	"github.com/BurntSushi/xgb/xproto"
@@ -179,9 +180,6 @@ type outputInfo struct {
 
 // RegistryHandler handles Wayland registry events
 type RegistryHandler struct {
-	wl.OutputGeometryHandler
-	wl.OutputModeHandler
-
 	registry         *wl.Registry
 	compositor       *wl.Compositor
 	lockManager      *ext.SessionLockManager
@@ -209,29 +207,84 @@ type handlerFunc func(wl.OutputGeometryEvent)
 // outputModeHandlerFunc is a function type for handling output mode events
 type outputModeHandlerFunc func(ev wl.OutputModeEvent)
 
+// Config represents the configuration for the locker
+type Config struct {
+	DebugExit                             bool
+	LockoutDuration                       time.Duration
+	LockoutAttempts                       int
+	MediaPlayerPath                       string
+	MediaPlayerArgs                       []string
+	MediaPlayerVolume                     int
+	MediaPlayerEnabled                    bool
+	MediaPlayerAutostart                  bool
+	MediaPlayerAutoplay                   bool
+	MediaPlayerAutoplayDelay              time.Duration
+	MediaPlayerAutoplayVolume             int
+	MediaPlayerAutoplayFadeIn             time.Duration
+	MediaPlayerAutoplayFadeOut            time.Duration
+	MediaPlayerAutoplayFadeStep           int
+	MediaPlayerAutoplayFadeInterval       time.Duration
+	MediaPlayerAutoplayFadeInStart        bool
+	MediaPlayerAutoplayFadeOutEnd         bool
+	MediaPlayerAutoplayFadeInEnd          bool
+	MediaPlayerAutoplayFadeOutStart       bool
+	MediaPlayerAutoplayFadeInStartVolume  int
+	MediaPlayerAutoplayFadeOutStartVolume int
+	MediaPlayerAutoplayFadeInEndVolume    int
+	MediaPlayerAutoplayFadeOutEndVolume   int
+}
+
+// WaylandLocker represents a Wayland-based screen locker
 type WaylandLocker struct {
+	// Wayland connection and display
 	display         *wl.Display
 	registry        *wl.Registry
 	registryHandler *RegistryHandler
 	compositor      *wl.Compositor
-	lockManager     *ext.SessionLockManager
-	lock            *ext.SessionLock
-	keyboard        *wl.Keyboard
-	seat            *wl.Seat
 	shm             *wl.Shm
-	securePassword  *SecurePassword
-	surfaces        map[*wl.Output]struct {
+	seat            *wl.Seat
+	keyboard        *wl.Keyboard
+	pointer         *wl.Pointer
+	output          *wl.Output
+	lock            *ext.SessionLock
+	lockSurface     *wl.Surface
+	lockManager     *ext.SessionLockManager
+
+	// Session lock surfaces
+	surfaces map[*wl.Output]struct {
 		wlSurface   *wl.Surface
 		lockSurface *ext.SessionLockSurface
 	}
-	redrawCh        chan int
-	outputs         map[uint32]*wl.Output
-	mediaPlayer     *MediaPlayer
-	done            chan struct{}
-	config          Configuration
-	helper          *LockHelper
-	lockActive      bool
-	countdownActive bool
-	lockoutManager  *LockoutManager // Use the shared lockout manager
+	outputs map[uint32]*wl.Output
+
+	// State
 	mu              sync.Mutex
+	done            chan struct{}
+	redrawCh        chan int
+	securePassword  *SecurePassword
+	countdownActive bool
+	countdownTimer  *time.Timer
+	lockActive      bool
+	mediaPlayer     *MediaPlayer
+	lockoutManager  *LockoutManager
+
+	// Keymap data
+	keymapData   []byte
+	keymapFormat uint32
+	keymapSize   uint32
+	xkbContext   uintptr
+	xkbState     uintptr
+	xkbKeymap    uintptr
+
+	// Configuration
+	config Configuration
+	helper *LockHelper
+}
+
+// updatePasswordDisplay updates the password display
+func (l *WaylandLocker) updatePasswordDisplay() {
+	select {
+	case l.redrawCh <- l.securePassword.Length():
+	default:
+	}
 }
