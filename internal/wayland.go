@@ -108,10 +108,9 @@ func NewWaylandLocker(config Configuration) *WaylandLocker {
 		helper:          NewLockHelper(config),
 		lockActive:      false,
 		mediaPlayer:     NewMediaPlayer(config),
-		failedAttempts:  0,
-		lockoutActive:   false,
+		lockoutManager:  NewLockoutManager(config),
 		countdownActive: false,
-		securePassword:  NewSecurePassword(), // Initialize the new securePassword field
+		securePassword:  NewSecurePassword(),
 	}
 }
 
@@ -756,19 +755,13 @@ func (l *WaylandLocker) Lock() error {
 }
 
 func (l *WaylandLocker) authenticate() {
-	// Check if we're in a lockout period
-	if l.lockoutActive && time.Now().Before(l.lockoutUntil) {
+	// Check if we're in a lockout period using the lockout manager
+	if l.lockoutManager.IsLockedOut() {
 		// Still in lockout period, don't even attempt authentication
-		remainingTime := time.Until(l.lockoutUntil).Round(time.Second)
+		remainingTime := l.lockoutManager.GetRemainingTime().Round(time.Second)
 		Info("Authentication locked out for another %v", remainingTime)
 		l.securePassword.Clear()
 		return
-	}
-
-	// If we were in a lockout but it's expired, clear the lockout state
-	if l.lockoutActive && time.Now().After(l.lockoutUntil) {
-		Info("Lockout period has expired, clearing lockout state")
-		l.lockoutActive = false
 	}
 
 	if l.helper == nil {
@@ -782,6 +775,9 @@ func (l *WaylandLocker) authenticate() {
 
 	if result.Success {
 		Debug("Auth OK, unlocking session")
+
+		// Reset lockout on successful authentication
+		l.lockoutManager.ResetLockout()
 
 		go func() {
 			if l.mediaPlayer != nil {
@@ -825,46 +821,18 @@ func (l *WaylandLocker) authenticate() {
 	} else {
 		Debug("Auth failed: %s", result.Message)
 
-		// Authentication failed, increment counter
-		l.failedAttempts++
-		l.lastFailureTime = time.Now()
-		Info("Authentication failed (%d/3 attempts): %s", l.failedAttempts, result.Message)
+		// Authentication failed, use the lockout manager to handle the failed attempt
+		lockoutActive, lockoutDuration, _ := l.lockoutManager.HandleFailedAttempt()
 
 		// First, do the password shake animation
 		l.shakePasswordDots()
 
-		// Check if we should implement a lockout
-		if l.failedAttempts >= 3 {
-			// Determine lockout duration - start with 30 seconds
-			lockoutDuration := 30 * time.Second
-
-			// If in debug mode, cap at 5 seconds
-			if l.config.DebugExit {
-				lockoutDuration = 5 * time.Second
-				Info("Debug mode: Using shorter lockout duration of 5 seconds")
-			} else {
-				// If this isn't the first lockout, increase the duration
-				if l.lockoutActive {
-					// Increase by 30 seconds each time
-					lockoutDuration = 30 * time.Second * time.Duration(l.failedAttempts/3)
-					// Cap at 10 minutes
-					if lockoutDuration > 10*time.Minute {
-						lockoutDuration = 10 * time.Minute
-					}
-				}
-			}
-
-			// Set the lockout time
-			l.lockoutUntil = time.Now().Add(lockoutDuration)
-			l.lockoutActive = true
-
-			Info("Failed %d attempts, locking out for %v", l.failedAttempts, lockoutDuration)
+		// If lockout was activated, show the lockout message
+		if lockoutActive {
+			Info("Lockout activated until: %v", l.lockoutManager.GetLockoutUntil())
 
 			// Show lockout message on screen AFTER the shake animation is complete
 			l.StartCountdown("Account locked", int(lockoutDuration.Seconds()))
-
-			// Reset counter after implementing lockout
-			l.failedAttempts = 0
 		}
 	}
 

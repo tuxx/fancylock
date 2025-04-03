@@ -241,13 +241,14 @@ func (l *X11Locker) detectMonitors() ([]Monitor, error) {
 func NewX11Locker(config Configuration) *X11Locker {
 	Info("Creating new X11Locker with config: %+v", config)
 	return &X11Locker{
-		config:       config,
-		helper:       NewLockHelper(config),
-		mediaPlayer:  NewMediaPlayer(config),
-		passwordBuf:  "",
-		isLocked:     false,
-		passwordDots: make([]bool, 0),
-		maxDots:      20, // Maximum number of password dots to display
+		config:         config,
+		helper:         NewLockHelper(config),
+		mediaPlayer:    NewMediaPlayer(config),
+		passwordBuf:    "",
+		isLocked:       false,
+		passwordDots:   make([]bool, 0),
+		maxDots:        20, // Maximum number of password dots to display
+		lockoutManager: NewLockoutManager(config),
 	}
 }
 
@@ -396,7 +397,7 @@ func (l *X11Locker) Lock() error {
 	Info("Entering main event loop")
 	for l.isLocked {
 		// If we're in lockout mode, we need to keep updating the timer display
-		if l.lockoutActive && time.Now().Before(l.lockoutUntil) {
+		if l.lockoutManager.IsLockedOut() && time.Now().Before(l.lockoutManager.GetLockoutUntil()) {
 			Debug("In lockout mode, updating timer")
 			// Redraw UI to update the lockout timer
 			l.drawUI()
@@ -549,11 +550,11 @@ func (l *X11Locker) hideCursor() error {
 	return nil
 }
 
-// handleKeyPress processes keyboard input
+// handleKeyPress handles key press events
 func (l *X11Locker) handleKeyPress(e xproto.KeyPressEvent) {
 	Debug("Handling key press event: keycode=%d", e.Detail)
-	// Check if we're in a lockout period
-	if l.lockoutActive && time.Now().Before(l.lockoutUntil) {
+	// Check if we're in a lockout period using the lockout manager
+	if l.lockoutManager.IsLockedOut() {
 		Debug("In lockout mode, limited key handling")
 		// During lockout, only allow Escape or Q for debug exit
 		keySyms := xproto.GetKeyboardMapping(l.conn, e.Detail, 1)
@@ -645,13 +646,13 @@ func (l *X11Locker) handleKeyPress(e xproto.KeyPressEvent) {
 	}
 }
 
-// authenticate attempts to verify the password
+// authenticate attempts to validate the entered password
 func (l *X11Locker) authenticate() {
 	Info("Attempting authentication")
-	// Check if we're in a lockout period
-	if l.lockoutActive && time.Now().Before(l.lockoutUntil) {
+	// Check if we're in a lockout period using the lockout manager
+	if l.lockoutManager.IsLockedOut() {
 		// Still in lockout period, don't even attempt authentication
-		remainingTime := l.lockoutUntil.Sub(time.Now()).Round(time.Second)
+		remainingTime := l.lockoutManager.GetRemainingTime().Round(time.Second)
 		Info("Authentication locked out for another %v", remainingTime)
 		l.passwordBuf = ""
 
@@ -661,12 +662,6 @@ func (l *X11Locker) authenticate() {
 		// Shake the password field to indicate lockout
 		go l.shakePasswordField()
 		return
-	}
-
-	// If we were in a lockout but it's expired, clear the lockout state
-	if l.lockoutActive && time.Now().After(l.lockoutUntil) {
-		Info("Lockout period has expired, clearing lockout state")
-		l.lockoutActive = false
 	}
 
 	// Add debug log for password attempt (don't log actual password)
@@ -681,46 +676,22 @@ func (l *X11Locker) authenticate() {
 	if result.Success {
 		// Authentication successful, unlock and reset counters
 		l.isLocked = false
-		l.failedAttempts = 0
-		l.lockoutActive = false
+		l.lockoutManager.ResetLockout()
 		Info("Authentication successful, unlocking screen")
 	} else {
-		// Authentication failed, increment counter
-		l.failedAttempts++
-		l.lastFailureTime = time.Now()
-		Info("Authentication failed (%d/3 attempts): %s", l.failedAttempts, result.Message)
+		// Authentication failed, use the lockout manager to handle the failed attempt
+		lockoutActive, lockoutDuration, _ := l.lockoutManager.HandleFailedAttempt()
+		Info("lockOutDuration: %d", lockoutDuration)
 
 		// Clear password
 		l.passwordBuf = ""
 
-		// Check if we should implement a lockout
-		if l.failedAttempts >= 3 {
-			// Determine the lockout duration based on recent failures
-			var lockoutDuration time.Duration
-
-			// Check if the 3 failures happened within a short period (e.g., 5 minutes)
-			if time.Since(l.lastFailureTime) < 5*time.Minute {
-				// Repeated quick failures, implement the longer 5-minute lockout
-				lockoutDuration = 5 * time.Minute
-				Info("Multiple rapid failures detected, locking out for 5 minutes")
-			} else {
-				// Standard lockout of 1 minute
-				lockoutDuration = 1 * time.Minute
-				Info("Failed 3 attempts, locking out for 1 minute")
-			}
-
-			// Set the lockout time
-			l.lockoutUntil = time.Now().Add(lockoutDuration)
-			l.lockoutActive = true
-			l.failedAttempts = 0 // Reset counter after implementing lockout
-
+		// If lockout was activated, update the UI
+		if lockoutActive {
 			// Make sure the lockout message is displayed
-			Info("Lockout activated until: %v", l.lockoutUntil)
+			Info("Lockout activated until: %v", l.lockoutManager.GetLockoutUntil())
 			l.drawLockoutMessage()
 		}
-
-		// Keep the dots for shake animation
-		// We'll clear them after the animation
 
 		// Shake the password field to indicate failure
 		go l.shakePasswordField()
@@ -782,11 +753,11 @@ func (l *X11Locker) shakePasswordField() {
 	l.clearPasswordDots()
 }
 
-// drawUI draws the complete UI
+// drawUI draws the user interface
 func (l *X11Locker) drawUI() {
 	Debug("Drawing UI")
-	// Check if we're in lockout mode
-	if l.lockoutActive && time.Now().Before(l.lockoutUntil) {
+	// Check if we're in lockout mode using the lockout manager
+	if l.lockoutManager.IsLockedOut() {
 		Debug("In lockout mode, drawing lockout message")
 		// Draw lockout message
 		l.drawLockoutMessage()
@@ -868,16 +839,8 @@ func (l *X11Locker) drawLockoutMessage() {
 	Debug("Mapping lockout message window")
 	xproto.MapWindow(l.conn, l.messageWindow)
 
-	// Get remaining lockout time
-	remainingTime := l.lockoutUntil.Sub(time.Now())
-	if remainingTime < 0 {
-		remainingTime = 0
-	}
-
-	// Format the time nicely
-	minutes := int(remainingTime.Minutes())
-	seconds := int(remainingTime.Seconds()) % 60
-	timeString := fmt.Sprintf("%02d:%02d", minutes, seconds)
+	// Get remaining lockout time using the lockout manager
+	timeString := l.lockoutManager.FormatRemainingTime()
 	Debug("Lockout remaining time: %s", timeString)
 
 	// Clear the window with our background color
@@ -917,16 +880,17 @@ func (l *X11Locker) drawLockoutMessage() {
 	Debug("Syncing X connection")
 	l.conn.Sync()
 
-	// Start a timer to update the countdown
-	if !l.timerRunning {
+	// Start a timer to update the countdown if not already running
+	if !l.lockoutManager.IsTimerRunning() {
 		Debug("Starting timer for lockout countdown")
-		l.timerRunning = true
+		l.lockoutManager.SetTimerRunning(true)
+
 		go func() {
 			Info("Starting lockout countdown timer")
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
 
-			for l.lockoutActive && time.Now().Before(l.lockoutUntil) && l.isLocked {
+			for l.lockoutManager.IsLockedOut() && l.isLocked {
 				select {
 				case <-ticker.C:
 					Debug("Updating lockout timer display")
@@ -935,7 +899,7 @@ func (l *X11Locker) drawLockoutMessage() {
 				}
 			}
 
-			l.timerRunning = false
+			l.lockoutManager.SetTimerRunning(false)
 			Info("Lockout countdown timer stopped")
 
 			// When lockout is over, hide the window if we're still locked
@@ -955,16 +919,8 @@ func (l *X11Locker) updateLockoutTimerDisplay() {
 		return
 	}
 
-	// Get remaining lockout time
-	remainingTime := l.lockoutUntil.Sub(time.Now())
-	if remainingTime < 0 {
-		remainingTime = 0
-	}
-
-	// Format the time nicely - show minutes and seconds
-	minutes := int(remainingTime.Minutes())
-	seconds := int(remainingTime.Seconds()) % 60
-	timeString := fmt.Sprintf("%02d:%02d", minutes, seconds)
+	// Get remaining lockout time using the lockout manager
+	timeString := l.lockoutManager.FormatRemainingTime()
 	Debug("Updated lockout remaining time: %s", timeString)
 
 	// Create a stronger, clearer message

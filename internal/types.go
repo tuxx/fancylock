@@ -30,28 +30,24 @@ type IdleWatcher struct {
 
 // X11Locker implements the ScreenLocker interface for X11
 type X11Locker struct {
-	config          Configuration
-	conn            *xgb.Conn
-	screen          *xproto.ScreenInfo
-	window          xproto.Window
-	gc              xproto.Gcontext
-	width           uint16
-	height          uint16
-	helper          *LockHelper
-	mediaPlayer     *MediaPlayer
-	passwordBuf     string
-	isLocked        bool
-	passwordDots    []bool // true for filled, false for empty
-	maxDots         int
-	idleWatcher     *IdleWatcher
-	dotWindows      []xproto.Window // Track password dot windows
-	failedAttempts  int             // Count of failed authentication attempts
-	lockoutUntil    time.Time       // Time until which input is locked out
-	lockoutActive   bool            // Whether a lockout is currently active
-	timerRunning    bool            // Track if the countdown timer is already running
-	lastFailureTime time.Time       // Time of the last failed attempt
-	messageWindow   xproto.Window   // Window for displaying lockout messages
-	textGC          xproto.Gcontext // Graphics context for drawing text
+	config         Configuration
+	conn           *xgb.Conn
+	screen         *xproto.ScreenInfo
+	window         xproto.Window
+	gc             xproto.Gcontext
+	width          uint16
+	height         uint16
+	helper         *LockHelper
+	mediaPlayer    *MediaPlayer
+	passwordBuf    string
+	isLocked       bool
+	passwordDots   []bool // true for filled, false for empty
+	maxDots        int
+	idleWatcher    *IdleWatcher
+	dotWindows     []xproto.Window // Track password dot windows
+	lockoutManager *LockoutManager // Use the shared lockout manager
+	messageWindow  xproto.Window   // Window for displaying lockout messages
+	textGC         xproto.Gcontext // Graphics context for drawing text
 }
 
 // MediaType defines the type of media file
@@ -262,9 +258,6 @@ type WaylandLocker struct {
 	helper          *LockHelper
 	lockActive      bool
 	countdownActive bool
-	failedAttempts  int
-	lockoutUntil    time.Time
-	lockoutActive   bool
-	lastFailureTime time.Time
+	lockoutManager  *LockoutManager // Use the shared lockout manager
 	mu              sync.Mutex
 }
