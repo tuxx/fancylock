@@ -131,7 +131,6 @@ func (h *surfaceHandler) HandleSessionLockSurfaceConfigure(ev ext.SessionLockSur
 }
 
 func NewWaylandLocker(config Configuration) *WaylandLocker {
-	InitLogger(LevelDebug, true)
 	Debug("WaylandLocker logger initialized")
 
 	return &WaylandLocker{

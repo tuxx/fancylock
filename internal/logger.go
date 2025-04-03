@@ -27,7 +27,7 @@ const (
 
 var (
 	// currentLevel is the current logging level
-	currentLevel LogLevel = LevelInfo
+	currentLevel LogLevel = LevelNone
 
 	// logger is the standard logger instance
 	logger = log.New(os.Stderr, "", log.LstdFlags)
