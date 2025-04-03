@@ -1,4 +1,5 @@
 #%PAM-1.0
 # /etc/pam.d/fancylock - PAM configuration for fancylock screen locker
+auth    sufficient pam_fprintd.so
 auth    required pam_unix.so nodelay
 account required pam_unix.so
