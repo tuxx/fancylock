@@ -362,17 +362,6 @@ func (mp *MediaPlayer) scanMediaFiles() error {
 }
 
 // getMediaType determines the type of media based on file extension
-var (
-	videoExtMap = map[string]bool{
-		".mp4": true, ".mkv": true, ".avi": true, ".mov": true,
-		".webm": true, ".wmv": true, ".flv": true, ".3gp": true,
-	}
-	imageExtMap = map[string]bool{
-		".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
-		".bmp": true, ".svg": true, ".webp": true,
-	}
-)
-
 func (mp *MediaPlayer) getMediaType(ext string) MediaType {
 	if videoExtMap[ext] {
 		return MediaTypeVideo

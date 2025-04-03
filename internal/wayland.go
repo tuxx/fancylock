@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"sync"
 	"syscall"
 	"time"
 
@@ -22,47 +21,11 @@ import (
 //go:embed fonts/DejaVuSans-Bold.ttf
 var fontBytes []byte
 
-type WaylandLocker struct {
-	display         *wl.Display
-	registry        *wl.Registry
-	registryHandler *RegistryHandler
-	compositor      *wl.Compositor
-	lockManager     *ext.SessionLockManager
-	lock            *ext.SessionLock
-	keyboard        *wl.Keyboard
-	seat            *wl.Seat
-	shm             *wl.Shm
-	securePassword  *SecurePassword
-	surfaces        map[*wl.Output]struct {
-		wlSurface   *wl.Surface
-		lockSurface *ext.SessionLockSurface
-	}
-	redrawCh        chan int
-	outputs         map[uint32]*wl.Output
-	mediaPlayer     *MediaPlayer
-	done            chan struct{}
-	config          Configuration
-	helper          *LockHelper
-	lockActive      bool
-	countdownActive bool
-	failedAttempts  int
-	lockoutUntil    time.Time
-	lockoutActive   bool
-	lastFailureTime time.Time
-	mu              sync.Mutex
-}
-
 var _ wl.KeyboardKeyHandler = (*WaylandLocker)(nil)
 var _ wl.KeyboardEnterHandler = (*WaylandLocker)(nil)
 var _ wl.KeyboardLeaveHandler = (*WaylandLocker)(nil)
 var _ wl.KeyboardKeymapHandler = (*WaylandLocker)(nil)
 var _ wl.KeyboardModifiersHandler = (*WaylandLocker)(nil)
-
-type surfaceHandler struct {
-	client      *WaylandLocker
-	surface     *wl.Surface
-	lockSurface *ext.SessionLockSurface
-}
 
 func (h *surfaceHandler) HandleSessionLockSurfaceConfigure(ev ext.SessionLockSurfaceConfigureEvent) {
 	Info("Surface configure: serial=%d, width=%d, height=%d\n", ev.Serial, ev.Width, ev.Height)
@@ -397,30 +360,7 @@ func (l *WaylandLocker) HandleSessionLockFinished(ev ext.SessionLockFinishedEven
 	close(l.done)
 }
 
-type outputInfo struct {
-	x, y   int
-	width  int
-	height int
-}
-
-type RegistryHandler struct {
-	wl.OutputGeometryHandler
-	wl.OutputModeHandler
-
-	registry         *wl.Registry
-	compositor       *wl.Compositor
-	lockManager      *ext.SessionLockManager
-	seat             *wl.Seat
-	shm              *wl.Shm
-	outputs          map[uint32]*wl.Output
-	outputGeometries map[*wl.Output]outputInfo
-}
-
-type handlerFunc func(wl.OutputGeometryEvent)
-
 func (f handlerFunc) HandleOutputGeometry(ev wl.OutputGeometryEvent) { f(ev) }
-
-type outputModeHandlerFunc func(ev wl.OutputModeEvent)
 
 func (f outputModeHandlerFunc) HandleOutputMode(ev wl.OutputModeEvent) {
 	f(ev)

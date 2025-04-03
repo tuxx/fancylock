@@ -9,6 +9,7 @@ import (
 	"github.com/BurntSushi/xgb/xproto"
 	"github.com/neurlang/wayland/wl"
 	zxdg "github.com/neurlang/wayland/xdg"
+	ext "github.com/tuxx/wayland-ext-session-lock-go"
 )
 
 // Monitor represents a physical display
@@ -190,4 +191,80 @@ type WaylandIdleWatcher struct {
 	timeout      time.Duration
 	stopChan     chan struct{}
 	parentLocker *WaylandLocker
+}
+
+// surfaceHandler handles Wayland surface events
+type surfaceHandler struct {
+	client      *WaylandLocker
+	surface     *wl.Surface
+	lockSurface *ext.SessionLockSurface
+}
+
+// outputInfo contains information about a Wayland output
+type outputInfo struct {
+	x, y   int
+	width  int
+	height int
+}
+
+// RegistryHandler handles Wayland registry events
+type RegistryHandler struct {
+	wl.OutputGeometryHandler
+	wl.OutputModeHandler
+
+	registry         *wl.Registry
+	compositor       *wl.Compositor
+	lockManager      *ext.SessionLockManager
+	seat             *wl.Seat
+	shm              *wl.Shm
+	outputs          map[uint32]*wl.Output
+	outputGeometries map[*wl.Output]outputInfo
+}
+
+// Media file extension maps
+var (
+	videoExtMap = map[string]bool{
+		".mp4": true, ".mkv": true, ".avi": true, ".mov": true,
+		".webm": true, ".wmv": true, ".flv": true, ".3gp": true,
+	}
+	imageExtMap = map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
+		".bmp": true, ".svg": true, ".webp": true,
+	}
+)
+
+// handlerFunc is a function type for handling output geometry events
+type handlerFunc func(wl.OutputGeometryEvent)
+
+// outputModeHandlerFunc is a function type for handling output mode events
+type outputModeHandlerFunc func(ev wl.OutputModeEvent)
+
+type WaylandLocker struct {
+	display         *wl.Display
+	registry        *wl.Registry
+	registryHandler *RegistryHandler
+	compositor      *wl.Compositor
+	lockManager     *ext.SessionLockManager
+	lock            *ext.SessionLock
+	keyboard        *wl.Keyboard
+	seat            *wl.Seat
+	shm             *wl.Shm
+	securePassword  *SecurePassword
+	surfaces        map[*wl.Output]struct {
+		wlSurface   *wl.Surface
+		lockSurface *ext.SessionLockSurface
+	}
+	redrawCh        chan int
+	outputs         map[uint32]*wl.Output
+	mediaPlayer     *MediaPlayer
+	done            chan struct{}
+	config          Configuration
+	helper          *LockHelper
+	lockActive      bool
+	countdownActive bool
+	failedAttempts  int
+	lockoutUntil    time.Time
+	lockoutActive   bool
+	lastFailureTime time.Time
+	mu              sync.Mutex
 }
