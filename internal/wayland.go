@@ -1012,6 +1012,7 @@ func (l *WaylandLocker) initWayland() error {
 		registry:         registry,
 		outputs:          make(map[uint32]*wl.Output),
 		outputGeometries: make(map[*wl.Output]outputInfo),
+		locker:           l, // Ensure the locker reference is set for keyboard handling
 	}
 	l.registryHandler = regHandler
 
@@ -1034,8 +1035,18 @@ func (l *WaylandLocker) initWayland() error {
 	}
 
 	// Check required interfaces
-	if l.compositor == nil || l.shm == nil || l.lockManager == nil {
-		return fmt.Errorf("missing required Wayland interfaces")
+	if l.compositor == nil {
+		return fmt.Errorf("Wayland compositor interface not found - is WAYLAND_DISPLAY set correctly?")
+	}
+	
+	if l.shm == nil {
+		return fmt.Errorf("Wayland shared memory interface not found")
+	}
+	
+	if l.lockManager == nil {
+		return fmt.Errorf("ext_session_lock_v1 protocol not supported by this Wayland compositor.\n" +
+			"Your compositor does not implement the standard Wayland locking protocol.\n" +
+			"Please check if your compositor supports the ext_session_lock_v1 protocol or use an X11 session.")
 	}
 
 	// Create session lock

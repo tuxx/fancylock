@@ -15,6 +15,7 @@ FancyLock is a visually appealing screen locker for Linux that plays videos or i
 - Support for multiple monitors
 - PAM authentication for secure login
 - Customizable settings
+- Support for both X11 and Wayland compositors with ext_session_lock_v1 protocol
 - Embedded version metadata (`-v`)
 
 ## Installation
@@ -218,6 +219,28 @@ fancylock --config /path/to/config.json
 - `post_lock_command`: Execute this command after unlocking the screen
 - `lock_pause_media`: Whether to pause all media players when locking the screen
 - `unlock_unpause_media`: Whether to unpause all media players when unlocking the screen
+
+## Display Server Compatibility
+
+FancyLock supports different display servers:
+
+### X11
+
+X11 is fully supported and has been extensively tested.
+
+### Wayland
+
+Wayland support is implemented for any compositor that supports the `ext_session_lock_v1` protocol, including:
+
+- Hyprland (tested)
+- Sway
+- River
+- Labwc
+- Wayfire
+- Weston
+
+
+If your Wayland compositor supports this protocol but is not explicitly detected, FancyLock will still attempt to use the standard Wayland locking mechanism.
 
 ## Current Status
 

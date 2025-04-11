@@ -99,12 +99,9 @@ func main() {
 	var locker il.ScreenLocker
 
 	switch displayServer {
-	case "hyprland":
-		log.Printf("Using Hyprland-specific Wayland locker")
+	case "hyprland", "wayland":
+		log.Printf("Using Wayland session lock protocol for compositor: %s", displayServer)
 		locker = il.NewWaylandLocker(config)
-	case "wayland":
-		// We'll implement Wayland support later
-		log.Fatalf("Wayland support not yet implemented")
 	case "x11":
 		locker = il.NewX11Locker(config)
 	default:
@@ -128,9 +125,26 @@ func DetectDisplayServer() string {
 		return "hyprland"
 	}
 
-	// Check for Wayland session
+	// Check for other Wayland compositors
 	waylandDisplay := os.Getenv("WAYLAND_DISPLAY")
 	if waylandDisplay != "" {
+		// Check common environment variables set by different Wayland compositors
+		if os.Getenv("SWAYSOCK") != "" {
+			return "sway"
+		} else if os.Getenv("WESTON_SOCKET_NAME") != "" {
+			return "weston"
+		} else if os.Getenv("RIVER_SEAT") != "" {
+			return "river"
+		} else if os.Getenv("LABWC_PID") != "" {
+			return "labwc"
+		} else if os.Getenv("WAYFIRE_CONFIG_FILE") != "" {
+			return "wayfire"
+		} else if os.Getenv("_GNOME_SHELL_SESSION_MANAGER") != "" {
+			return "gnome"
+		} else if os.Getenv("KDE_FULL_SESSION") != "" && waylandDisplay != "" {
+			return "kde"
+		}
+		// Default to generic wayland if compositor can't be specifically identified
 		return "wayland"
 	}
 
