@@ -130,19 +130,15 @@ func DetectDisplayServer() string {
 	if waylandDisplay != "" {
 		// Check common environment variables set by different Wayland compositors
 		if os.Getenv("SWAYSOCK") != "" {
-			return "sway"
+			return "wayland"
 		} else if os.Getenv("WESTON_SOCKET_NAME") != "" {
-			return "weston"
+			return "wayland"
 		} else if os.Getenv("RIVER_SEAT") != "" {
-			return "river"
+			return "wayland"
 		} else if os.Getenv("LABWC_PID") != "" {
-			return "labwc"
+			return "wayland"
 		} else if os.Getenv("WAYFIRE_CONFIG_FILE") != "" {
-			return "wayfire"
-		} else if os.Getenv("_GNOME_SHELL_SESSION_MANAGER") != "" {
-			return "gnome"
-		} else if os.Getenv("KDE_FULL_SESSION") != "" && waylandDisplay != "" {
-			return "kde"
+			return "wayland"
 		}
 		// Default to generic wayland if compositor can't be specifically identified
 		return "wayland"
