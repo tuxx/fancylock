@@ -14,10 +14,11 @@ import (
 
 // Monitor represents a physical display
 type Monitor struct {
-	X      int
-	Y      int
-	Width  int
-	Height int
+	X         int
+	Y         int
+	Width     int
+	Height    int
+	SurfaceID uint32 // Added Wayland surface ID
 }
 
 // X11Locker implements the ScreenLocker interface for X11
@@ -166,9 +167,11 @@ type WaylandBuffer struct {
 
 // surfaceHandler handles Wayland surface events
 type surfaceHandler struct {
-	client      *WaylandLocker
-	surface     *wl.Surface
-	lockSurface *ext.SessionLockSurface
+	client        *WaylandLocker
+	parentSurface *wl.Surface
+	childSurface  *wl.Surface
+	subsurface    *wl.Subsurface
+	lockSurface   *ext.SessionLockSurface
 }
 
 // outputInfo contains information about a Wayland output
@@ -182,6 +185,7 @@ type outputInfo struct {
 type RegistryHandler struct {
 	registry         *wl.Registry
 	compositor       *wl.Compositor
+	subcompositor    *wl.Subcompositor
 	lockManager      *ext.SessionLockManager
 	seat             *wl.Seat
 	shm              *wl.Shm
@@ -215,6 +219,7 @@ type WaylandLocker struct {
 	registry        *wl.Registry
 	registryHandler *RegistryHandler
 	compositor      *wl.Compositor
+	subcompositor   *wl.Subcompositor
 	shm             *wl.Shm
 	seat            *wl.Seat
 	keyboard        *wl.Keyboard
@@ -224,10 +229,12 @@ type WaylandLocker struct {
 	lockSurface     *wl.Surface
 	lockManager     *ext.SessionLockManager
 
-	// Session lock surfaces
+	// Session lock surfaces per output
 	surfaces map[*wl.Output]struct {
-		wlSurface   *wl.Surface
-		lockSurface *ext.SessionLockSurface
+		parentSurface *wl.Surface
+		childSurface  *wl.Surface
+		subsurface    *wl.Subsurface
+		lockSurface   *ext.SessionLockSurface
 	}
 	outputs map[uint32]*wl.Output
 

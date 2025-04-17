@@ -4,7 +4,6 @@ import (
 	_ "embed"
 	"fmt"
 	"image"
-	"image/color"
 	"syscall"
 	"time"
 
@@ -28,39 +27,39 @@ var _ wl.KeyboardKeymapHandler = (*WaylandLocker)(nil)
 var _ wl.KeyboardModifiersHandler = (*WaylandLocker)(nil)
 
 func (h *surfaceHandler) HandleSessionLockSurfaceConfigure(ev ext.SessionLockSurfaceConfigureEvent) {
-	Info("Surface configure: serial=%d, width=%d, height=%d\n", ev.Serial, ev.Width, ev.Height)
+	Info("Parent surface configure: serial=%d, width=%d, height=%d\n", ev.Serial, ev.Width, ev.Height)
 
 	// Acknowledge the configure
 	h.lockSurface.AckConfigure(ev.Serial)
-	Debug("Acknowledged configure")
+	Debug("Acknowledged parent surface configure")
 
-	// Create a shared memory buffer for the surface
+	// Create a shared memory buffer for the parent surface
 	stride := int(ev.Width) * 4
 	size := stride * int(ev.Height)
 
 	// Create memory-backed file descriptor
-	fd, err := unix.MemfdCreate("buffer", unix.MFD_CLOEXEC)
+	fd, err := unix.MemfdCreate("parent-buffer", unix.MFD_CLOEXEC)
 	if err != nil {
-		Error("Failed to create memfd: %v", err)
+		Error("Failed to create memfd for parent surface: %v", err)
 		return
 	}
 	defer unix.Close(fd) // Ensure fd is closed on all exit paths
 
 	// Set the size of the file
 	if err = syscall.Ftruncate(fd, int64(size)); err != nil {
-		Error("Failed to truncate memfd: %v", err)
+		Error("Failed to truncate memfd for parent surface: %v", err)
 		return
 	}
 
 	// Map the file into memory
 	data, err := syscall.Mmap(fd, 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if err != nil {
-		Error("Failed to mmap: %v", err)
+		Error("Failed to mmap parent surface buffer: %v", err)
 		return
 	}
 	defer syscall.Munmap(data)
 
-	// Fill with black transparent color (RGBA format)
+	// Fill with fully transparent black color (RGBA format) for the parent lock surface
 	for i := 0; i < size; i += 4 {
 		data[i+0] = 0 // Blue
 		data[i+1] = 0 // Green
@@ -70,26 +69,81 @@ func (h *surfaceHandler) HandleSessionLockSurfaceConfigure(ev ext.SessionLockSur
 
 	pool, err := h.client.shm.CreatePool(uintptr(fd), int32(size))
 	if err != nil {
-		Error("Failed to create pool: %v", err)
+		Error("Failed to create pool for parent surface: %v", err)
 		return
 	}
+	defer pool.Destroy() // Ensure pool is destroyed
 
 	// Create a buffer from the pool
 	buffer, err := pool.CreateBuffer(0, int32(ev.Width), int32(ev.Height), int32(stride), wl.ShmFormatArgb8888)
 	if err != nil {
-		Error("Failed to create buffer: %v", err)
-		// Explicitly destroy the pool as it's no longer needed if buffer creation fails
-		pool.Destroy()
+		Error("Failed to create buffer for parent surface: %v", err)
+		// Pool is destroyed by defer above
+		return
+	}
+	// No need to explicitly destroy the buffer? Wayland protocol usually handles this.
+
+	// Attach buffer to the parent surface and commit
+	h.parentSurface.Attach(buffer, 0, 0)
+	h.parentSurface.Damage(0, 0, int32(ev.Width), int32(ev.Height))
+	// Set input region to nil to allow input passthrough (mouse clicks, etc.)
+	// The actual input handling (keyboard) is done via the wl_seat/wl_keyboard global objects.
+	h.parentSurface.SetInputRegion(nil)
+	h.parentSurface.Commit()
+
+	// Now configure the child surface. We can make it opaque black initially.
+	// This surface will be used by MPV.
+	// We can reuse the dimensions.
+	childStride := stride
+	childSize := size
+	childFd, err := unix.MemfdCreate("child-buffer", unix.MFD_CLOEXEC)
+	if err != nil {
+		Error("Failed to create memfd for child surface: %v", err)
+		return
+	}
+	defer unix.Close(childFd)
+
+	if err = syscall.Ftruncate(childFd, int64(childSize)); err != nil {
+		Error("Failed to truncate memfd for child surface: %v", err)
 		return
 	}
 
-	// Attach buffer to surface and commit
-	h.surface.Attach(buffer, 0, 0)
-	h.surface.Damage(0, 0, int32(ev.Width), int32(ev.Height))
-	h.surface.SetInputRegion(nil)
-	h.surface.Commit()
+	childData, err := syscall.Mmap(childFd, 0, childSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	if err != nil {
+		Error("Failed to mmap child surface buffer: %v", err)
+		return
+	}
+	defer syscall.Munmap(childData)
 
-	Info("Created %dx%d buffer with transparent background and committed surface\n", ev.Width, ev.Height)
+	// Fill child surface with opaque black initially
+	for i := 0; i < childSize; i += 4 {
+		childData[i+0] = 0   // Blue
+		childData[i+1] = 0   // Green
+		childData[i+2] = 0   // Red
+		childData[i+3] = 255 // Alpha (fully opaque)
+	}
+
+	childPool, err := h.client.shm.CreatePool(uintptr(childFd), int32(childSize))
+	if err != nil {
+		Error("Failed to create pool for child surface: %v", err)
+		return
+	}
+	defer childPool.Destroy()
+
+	childBuffer, err := childPool.CreateBuffer(0, int32(ev.Width), int32(ev.Height), int32(childStride), wl.ShmFormatArgb8888)
+	if err != nil {
+		Error("Failed to create buffer for child surface: %v", err)
+		return
+	}
+
+	// Attach buffer to child surface and commit
+	h.childSurface.Attach(childBuffer, 0, 0)
+	h.childSurface.Damage(0, 0, int32(ev.Width), int32(ev.Height))
+	h.childSurface.Commit() // Commit the child surface independently
+
+	// No need to explicitly destroy childBuffer?
+
+	Info("Configured parent (%dx%d, transparent) and child (%dx%d, black) surfaces", ev.Width, ev.Height, ev.Width, ev.Height)
 }
 
 func NewWaylandLocker(config Configuration) *WaylandLocker {
@@ -98,8 +152,10 @@ func NewWaylandLocker(config Configuration) *WaylandLocker {
 	return &WaylandLocker{
 		display: nil,
 		surfaces: make(map[*wl.Output]struct {
-			wlSurface   *wl.Surface
-			lockSurface *ext.SessionLockSurface
+			parentSurface *wl.Surface
+			childSurface  *wl.Surface
+			subsurface    *wl.Subsurface
+			lockSurface   *ext.SessionLockSurface
 		}),
 		outputs:         make(map[uint32]*wl.Output),
 		done:            make(chan struct{}),
@@ -193,10 +249,14 @@ func (l *WaylandLocker) HandleKeyboardModifiers(ev wl.KeyboardModifiersEvent) {
 	}
 }
 
-func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int, offsetX int) {
-	width, height := l.getSurfaceDimensions(surface)
-	stride := int(width) * 4
-	size := stride * int(height)
+func drawPasswordFeedback(l *WaylandLocker, parentSurface *wl.Surface, count int, offsetX int) {
+	width, height := l.getSurfaceDimensions(parentSurface)
+	if width <= 0 || height <= 0 {
+		Warn("Invalid surface dimensions (%dx%d) for password feedback, skipping draw", width, height)
+		return
+	}
+	stride := width * 4     // Use fetched width
+	size := stride * height // Use fetched dimensions
 
 	fd, err := unix.MemfdCreate("pwfeedback", unix.MFD_CLOEXEC)
 	if err != nil {
@@ -230,8 +290,8 @@ func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int, offs
 	dotSpacing := 40 // Increased spacing for larger dots
 	dotRadius := 12  // 4x the original size (was 3)
 	totalWidth := count * dotSpacing
-	startX := (int(width)-totalWidth)/2 + offsetX
-	y := int(height) - 100
+	startX := (width-totalWidth)/2 + offsetX // Use fetched width
+	y := height - 100                        // Use fetched height
 
 	for i := 0; i < count && i < 32; i++ {
 		x := startX + i*dotSpacing
@@ -242,12 +302,12 @@ func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int, offs
 				if dx*dx+dy*dy <= dotRadius*dotRadius {
 					px := x + dx
 					py := y + dy
-					if px >= 0 && py >= 0 && px < int(width) && py < int(height) {
-						offset := (py*int(width) + px) * 4
-						data[offset+0] = 0xff // Blue
-						data[offset+1] = 0xff // Green
-						data[offset+2] = 0xff // Red
-						data[offset+3] = 0xff // Alpha
+					if px >= 0 && py >= 0 && px < width && py < height { // Use fetched dimensions
+						offset := (py*width + px) * 4 // Use fetched width
+						data[offset+0] = 0xff         // Blue
+						data[offset+1] = 0xff         // Green
+						data[offset+2] = 0xff         // Red
+						data[offset+3] = 0xff         // Alpha
 					}
 				}
 			}
@@ -259,23 +319,24 @@ func drawPasswordFeedback(l *WaylandLocker, surface *wl.Surface, count int, offs
 		Error("Failed to create shared memory pool: %v", err)
 		return
 	}
+	defer pool.Destroy() // Ensure pool is destroyed
 
 	buffer, err := pool.CreateBuffer(0, int32(width), int32(height), int32(stride), wl.ShmFormatArgb8888)
 	if err != nil {
 		Error("Failed to create buffer: %v", err)
-		pool.Destroy()
 		return
 	}
+	// Buffer will be destroyed when parentSurface is destroyed?
 
 	// Set input region to nil to allow input through the transparent parts
-	surface.SetInputRegion(nil)
+	parentSurface.SetInputRegion(nil)
 
 	// Attach buffer to surface and commit
-	surface.Attach(buffer, 0, 0)
-	surface.Damage(0, 0, int32(width), int32(height))
-	surface.Commit()
+	parentSurface.Attach(buffer, 0, 0)
+	parentSurface.Damage(0, 0, int32(width), int32(height))
+	parentSurface.Commit()
 
-	Debug("Drew password feedback dots: count=%d, offsetX=%d", count, offsetX)
+	Debug("Drew password feedback dots on parent surface: count=%d, offsetX=%d", count, offsetX)
 }
 
 func (l *WaylandLocker) shakePasswordDots() {
@@ -295,24 +356,24 @@ func (l *WaylandLocker) shakePasswordDots() {
 	for i := 0; i < iterations; i++ {
 		// Move right
 		for _, entry := range l.surfaces {
-			if entry.wlSurface != nil {
-				drawPasswordFeedback(l, entry.wlSurface, dotCount, distance)
+			if entry.parentSurface != nil { // Target parentSurface
+				drawPasswordFeedback(l, entry.parentSurface, dotCount, distance)
 			}
 		}
 		time.Sleep(delay)
 
 		// Move left
 		for _, entry := range l.surfaces {
-			if entry.wlSurface != nil {
-				drawPasswordFeedback(l, entry.wlSurface, dotCount, -distance)
+			if entry.parentSurface != nil { // Target parentSurface
+				drawPasswordFeedback(l, entry.parentSurface, dotCount, -distance)
 			}
 		}
 		time.Sleep(delay)
 
 		// Back to center
 		for _, entry := range l.surfaces {
-			if entry.wlSurface != nil {
-				drawPasswordFeedback(l, entry.wlSurface, dotCount, 0)
+			if entry.parentSurface != nil { // Target parentSurface
+				drawPasswordFeedback(l, entry.parentSurface, dotCount, 0)
 			}
 		}
 		time.Sleep(delay)
@@ -320,8 +381,8 @@ func (l *WaylandLocker) shakePasswordDots() {
 
 	// Final redraw with no dots
 	for _, entry := range l.surfaces {
-		if entry.wlSurface != nil {
-			drawPasswordFeedback(l, entry.wlSurface, 0, 0)
+		if entry.parentSurface != nil { // Target parentSurface
+			drawPasswordFeedback(l, entry.parentSurface, 0, 0)
 		}
 	}
 }
@@ -436,6 +497,22 @@ func (h *RegistryHandler) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 	case "wl_compositor":
 		h.compositor = wlclient.RegistryBindCompositorInterface(h.registry, ev.Name, ev.Version)
 		Debug("Bound wl_compositor")
+	case "wl_subcompositor": // Add case for subcompositor
+		Debug("Found wl_subcompositor interface")
+		// Create the proxy object using the context from the registry
+		if h.registry == nil || h.registry.Context() == nil {
+			Error("Cannot bind wl_subcompositor: registry or context is nil")
+			return
+		}
+		subComp := wl.NewSubcompositor(h.registry.Context()) // Use wl.NewSubcompositor
+		// Bind the global using the correct string name and the new proxy
+		err := h.registry.Bind(ev.Name, "wl_subcompositor", ev.Version, subComp)
+		if err != nil {
+			Error("Failed to bind wl_subcompositor: %v", err)
+		} else {
+			h.subcompositor = subComp
+			Debug("Bound wl_subcompositor")
+		}
 	case "wl_seat":
 		h.seat = wlclient.RegistryBindSeatInterface(h.registry, ev.Name, ev.Version)
 		Debug("Bound wl_seat")
@@ -483,8 +560,25 @@ func (l *WaylandLocker) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 	switch ev.Interface {
 	case "wl_compositor":
 		Debug("Found wl_compositor interface")
+		// Use the version reported by the event, minimum 4?
 		l.compositor = wlclient.RegistryBindCompositorInterface(l.registry, ev.Name, 4)
 		Debug("Bound wl_compositor interface")
+	case "wl_subcompositor": // Add binding for subcompositor here as well
+		Debug("Found wl_subcompositor interface")
+		if l.registry == nil || l.registry.Context() == nil {
+			Error("Cannot bind wl_subcompositor in locker: registry or context is nil")
+			return
+		}
+		// Create the proxy object using the context from the registry
+		subComp := wl.NewSubcompositor(l.registry.Context()) // Use wl.NewSubcompositor
+		// Bind the global using the correct string name and the new proxy, version 1
+		err := l.registry.Bind(ev.Name, "wl_subcompositor", 1, subComp)
+		if err != nil {
+			Error("Failed to bind wl_subcompositor in locker handler: %v", err)
+		} else {
+			l.subcompositor = subComp
+			Debug("Bound wl_subcompositor interface")
+		}
 	case "ext_session_lock_manager_v1":
 		Debug("Found ext_session_lock_manager_v1 interface")
 		l.lockManager = ext.BindSessionLockManager(l.registry, ev.Name, 1)
@@ -592,8 +686,8 @@ func (l *WaylandLocker) Lock() error {
 			case count := <-l.redrawCh:
 				Debug("Redrawing password dots: count=%d", count)
 				for _, entry := range l.surfaces {
-					if entry.wlSurface != nil {
-						drawPasswordFeedback(l, entry.wlSurface, count, 0)
+					if entry.parentSurface != nil { // Draw on parent surface
+						drawPasswordFeedback(l, entry.parentSurface, count, 0)
 					}
 				}
 			}
@@ -714,13 +808,13 @@ func (l *WaylandLocker) StartCountdown(message string, duration int) {
 	}
 
 	go func() {
-		Debug("Starting countdown on all surfaces")
+		Debug("Starting countdown on all parent surfaces")
 
 		// Update every second
 		for i := duration; i >= 0; i-- {
 			// Loop through all surfaces to show the countdown on each
 			for _, entry := range l.surfaces {
-				if entry.wlSurface != nil {
+				if entry.parentSurface != nil { // Use parentSurface
 					func(s *wl.Surface) {
 						defer func() {
 							if r := recover(); r != nil {
@@ -728,8 +822,8 @@ func (l *WaylandLocker) StartCountdown(message string, duration int) {
 							}
 						}()
 
-						safeCenteredMessage(s, l, message, i)
-					}(entry.wlSurface)
+						safeCenteredMessage(s, l, message, i) // Pass parentSurface
+					}(entry.parentSurface)
 				}
 			}
 
@@ -737,7 +831,17 @@ func (l *WaylandLocker) StartCountdown(message string, duration int) {
 
 			// Check if we should continue
 			if i > 0 {
-				time.Sleep(1 * time.Second)
+				// Use a timer to avoid drift and allow cancellation
+				timer := time.NewTimer(1 * time.Second)
+				select {
+				case <-timer.C:
+					// Continue loop
+				case <-l.done:
+					// Stop countdown if lock is finished
+					timer.Stop()
+					Debug("Countdown interrupted by lock finish")
+					return
+				}
 			}
 		}
 
@@ -745,117 +849,127 @@ func (l *WaylandLocker) StartCountdown(message string, duration int) {
 
 		// Clear the countdown message after it's done
 		for _, entry := range l.surfaces {
-			if entry.wlSurface != nil {
+			if entry.parentSurface != nil { // Use parentSurface
 				func(s *wl.Surface) {
 					defer func() {
 						if r := recover(); r != nil {
-							Error("Recovered from panic when clearing countdown: %v", r)
+							Error("Recovered from panic clearing message: %v", r)
 						}
 					}()
-
-					clearMessage(s, l)
-				}(entry.wlSurface)
+					clearMessage(s, l) // Pass parentSurface
+				}(entry.parentSurface)
 			}
 		}
 
 		// Reset countdown active flag
+		l.mu.Lock()
 		l.countdownActive = false
+		l.mu.Unlock()
 	}()
 }
 
-func clearMessage(surface *wl.Surface, l *WaylandLocker) {
-	if surface == nil || l == nil {
+func clearMessage(parentSurface *wl.Surface, l *WaylandLocker) {
+	width, height := l.getSurfaceDimensions(parentSurface)
+	if width <= 0 || height <= 0 {
+		Warn("Invalid surface dimensions (%dx%d) for clearing message, skipping draw", width, height)
 		return
 	}
-
-	width, height := l.getSurfaceDimensions(surface)
-
 	stride := width * 4
 	size := stride * height
 
-	fd, err := unix.MemfdCreate("clearbuffer", unix.MFD_CLOEXEC)
+	fd, err := unix.MemfdCreate("clearmsg", unix.MFD_CLOEXEC)
 	if err != nil {
-		Error("Failed to create memfd for clear: %v", err)
+		Error("Failed to create memfd for clearing message: %v", err)
 		return
 	}
 	defer unix.Close(fd)
 
 	err = syscall.Ftruncate(fd, int64(size))
 	if err != nil {
-		Error("Failed to truncate memfd for clear: %v", err)
+		Error("Failed to truncate memfd for clearing message: %v", err)
 		return
 	}
 
 	data, err := syscall.Mmap(fd, 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if err != nil {
-		Error("Failed to mmap for clear: %v", err)
+		Error("Failed to map memory for clearing message: %v", err)
 		return
 	}
 	defer syscall.Munmap(data)
 
-	// Fill with completely transparent pixels
+	// Fill with fully transparent
 	for i := 0; i < size; i += 4 {
-		data[i+0] = 0 // Blue
-		data[i+1] = 0 // Green
-		data[i+2] = 0 // Red
-		data[i+3] = 0 // Completely transparent
+		data[i+3] = 0 // Alpha
 	}
 
-	// Create shared memory pool
 	pool, err := l.shm.CreatePool(uintptr(fd), int32(size))
 	if err != nil {
-		Error("Failed to create pool for clear: %v", err)
+		Error("Failed to create shm pool for clearing message: %v", err)
 		return
 	}
+	defer pool.Destroy()
 
-	// Create buffer
 	buffer, err := pool.CreateBuffer(0, int32(width), int32(height), int32(stride), wl.ShmFormatArgb8888)
 	if err != nil {
-		Error("Failed to create buffer for clear: %v", err)
+		Error("Failed to create buffer for clearing message: %v", err)
 		return
 	}
 
-	// Attach and commit
-	surface.Attach(buffer, 0, 0)
-	surface.Damage(0, 0, int32(width), int32(height))
-	surface.Commit()
+	parentSurface.Attach(buffer, 0, 0)
+	parentSurface.Damage(0, 0, int32(width), int32(height))
+	parentSurface.SetInputRegion(nil) // Ensure input region is still nil
+	parentSurface.Commit()
+
+	Debug("Cleared message on parent surface")
 }
 
-func safeCenteredMessage(surface *wl.Surface, l *WaylandLocker, message string, secondsLeft int) {
-	if surface == nil || l == nil {
+func safeCenteredMessage(parentSurface *wl.Surface, l *WaylandLocker, message string, secondsLeft int) {
+	width, height := l.getSurfaceDimensions(parentSurface)
+	if width <= 0 || height <= 0 {
+		Warn("Invalid surface dimensions (%dx%d) for drawing message, skipping", width, height)
 		return
 	}
+	stride := width * 4
+	size := stride * height
 
-	width, height := l.getSurfaceDimensions(surface)
-
-	// Format time in mm:ss format
-	minutes := secondsLeft / 60
-	seconds := secondsLeft % 60
-	timeStr := fmt.Sprintf("%02d:%02d", minutes, seconds)
-
-	// Create RGBA image
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-
-	// Draw semi-transparent black background
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			img.SetRGBA(x, y, color.RGBA{0, 0, 0, 200}) // More opaque black
-		}
-	}
-
-	// Draw "Intruder Alert!" message at the center
-	lockedMsg := "INTRUDER ALERT"
-
-	// Create a font drawer for basic text
-	ttf, err := opentype.Parse(fontBytes)
+	fd, err := unix.MemfdCreate("msgbuffer", unix.MFD_CLOEXEC)
 	if err != nil {
-		Error("Failed to parse embedded TTF font: %v", err)
+		Error("Failed to create memfd for message buffer: %v", err)
+		return
+	}
+	defer unix.Close(fd)
+
+	if err := syscall.Ftruncate(fd, int64(size)); err != nil {
+		Error("Failed to truncate memfd for message buffer: %v", err)
 		return
 	}
 
-	// Large font for "Intruder Alert!"
-	face, err := opentype.NewFace(ttf, &opentype.FaceOptions{
-		Size:    96, // Big font size
+	data, err := syscall.Mmap(fd, 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	if err != nil {
+		Error("Failed to map memory for message buffer: %v", err)
+		return
+	}
+	defer syscall.Munmap(data)
+
+	// Fill with transparent black initially
+	for i := 0; i < size; i += 4 {
+		data[i+3] = 0 // Alpha
+	}
+
+	// Create an RGBA image wrapping the shared memory
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	img.Pix = data // Point Pix to our mmapped data
+
+	// Parse the font
+	f, err := opentype.Parse(fontBytes)
+	if err != nil {
+		Error("Failed to parse font: %v", err)
+		return // Cannot draw text without font
+	}
+
+	// Create a font face
+	face, err := opentype.NewFace(f, &opentype.FaceOptions{
+		Size:    48, // Increased font size
 		DPI:     72,
 		Hinting: font.HintingFull,
 	})
@@ -865,283 +979,313 @@ func safeCenteredMessage(surface *wl.Surface, l *WaylandLocker, message string, 
 	}
 	defer face.Close()
 
-	lockedX := (width - font.MeasureString(face, lockedMsg).Round()) / 2
-	lockedY := height/2 - 50
-
+	// Prepare text drawer
 	d := &font.Drawer{
 		Dst:  img,
-		Src:  image.White,
+		Src:  image.White, // Text color
 		Face: face,
-		Dot:  fixed.P(lockedX, lockedY),
-	}
-	d.DrawString(lockedMsg)
-
-	// Smaller font for "Security cooldown engaged"
-	smallFace, err := opentype.NewFace(ttf, &opentype.FaceOptions{
-		Size:    36, // Smaller font size
-		DPI:     72,
-		Hinting: font.HintingFull,
-	})
-	if err != nil {
-		Error("Failed to create small font face: %v", err)
-		return
-	}
-	defer smallFace.Close()
-
-	retryMsg := "Security cooldown engaged"
-	retryX := (width - font.MeasureString(smallFace, retryMsg).Round()) / 2
-	retryY := height/2 + 10
-
-	d.Face = smallFace
-	d.Dot = fixed.P(retryX, retryY)
-	d.DrawString(retryMsg)
-
-	// Timer below with large font again
-	d.Face = face
-	timerX := (width - font.MeasureString(face, timeStr).Round()) / 2
-	timerY := height/2 + 150 // Moved lower
-	d.Dot = fixed.P(timerX, timerY)
-	d.DrawString(timeStr)
-
-	// Convert the image to a byte slice for Wayland
-	stride := width * 4
-	size := stride * height
-
-	fd, err := unix.MemfdCreate("msgbuffer", unix.MFD_CLOEXEC)
-	if err != nil {
-		Error("Failed to create memfd for message: %v", err)
-		return
-	}
-	defer unix.Close(fd)
-
-	err = syscall.Ftruncate(fd, int64(size))
-	if err != nil {
-		Error("Failed to truncate memfd for message: %v", err)
-		return
 	}
 
-	data, err := syscall.Mmap(fd, 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	if err != nil {
-		Error("Failed to mmap for message: %v", err)
-		return
-	}
-	defer syscall.Munmap(data)
+	// Format the message with remaining time
+	fullMessage := fmt.Sprintf("%s (%d)", message, secondsLeft)
 
-	// Copy image data to the buffer
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			r, g, b, a := img.At(x, y).RGBA()
-			offset := (y*width + x) * 4
-			data[offset+0] = byte(b >> 8)
-			data[offset+1] = byte(g >> 8)
-			data[offset+2] = byte(r >> 8)
-			data[offset+3] = byte(a >> 8)
-		}
+	// Calculate text bounds to center it
+	bounds, _ := d.BoundString(fullMessage)
+	textWidth := (bounds.Max.X - bounds.Min.X).Ceil()
+	textHeight := (bounds.Max.Y - bounds.Min.Y).Ceil() // Get height for vertical centering
+
+	// Calculate the starting point for the text to be centered
+	startX := (width - textWidth) / 2
+	startY := (height / 2) + (textHeight / 2) // Center vertically
+
+	// Set the drawing position
+	d.Dot = fixed.Point26_6{
+		X: fixed.I(startX),
+		Y: fixed.I(startY),
 	}
 
-	// Create shared memory pool and rest of the function remains unchanged
+	// Draw the string
+	d.DrawString(fullMessage)
+
+	// Create SHM pool and buffer
 	pool, err := l.shm.CreatePool(uintptr(fd), int32(size))
 	if err != nil {
-		Error("Failed to create pool for message: %v", err)
+		Error("Failed to create SHM pool for message: %v", err)
 		return
 	}
+	defer pool.Destroy()
 
-	// Create buffer
 	buffer, err := pool.CreateBuffer(0, int32(width), int32(height), int32(stride), wl.ShmFormatArgb8888)
 	if err != nil {
 		Error("Failed to create buffer for message: %v", err)
-		pool.Destroy()
 		return
 	}
 
-	// Attach and commit
-	surface.Attach(buffer, 0, 0)
-	surface.Damage(0, 0, int32(width), int32(height))
-	surface.Commit()
+	// Attach, damage, set input region, and commit
+	parentSurface.Attach(buffer, 0, 0)
+	parentSurface.Damage(0, 0, int32(width), int32(height))
+	parentSurface.SetInputRegion(nil) // Ensure input region is nil
+	parentSurface.Commit()
+
+	Debug("Drew centered message '%s' on parent surface %d", fullMessage, parentSurface.Id())
 }
 
-// getSurfaceDimensions returns the width and height for a given surface
-// If dimensions can't be determined, returns reasonable minimum values
+// getSurfaceDimensions retrieves the dimensions associated with a Wayland surface.
+// It looks up the output associated with the surface and returns its geometry.
 func (l *WaylandLocker) getSurfaceDimensions(surface *wl.Surface) (width, height int) {
-	// Set minimum reasonable dimensions as absolute fallback
-	width = 640
-	height = 480
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-	// Try to get actual dimensions
+	// Find the output associated with this surface (assuming parentSurface for now)
 	for output, entry := range l.surfaces {
-		if entry.wlSurface == surface {
-			if l.registryHandler != nil && l.registryHandler.outputGeometries != nil {
-				if info, ok := l.registryHandler.outputGeometries[output]; ok {
-					width = info.width
-					height = info.height
-					return
-				}
+		if entry.parentSurface == surface {
+			// Now find the geometry for this output in the registry handler
+			if geom, ok := l.registryHandler.outputGeometries[output]; ok {
+				Debug("Found dimensions %dx%d for surface %d via output %d", geom.width, geom.height, surface.Id(), output.Id())
+				return geom.width, geom.height
+			} else {
+				Warn("Geometry not found for output %d associated with surface %d", output.Id(), surface.Id())
+				return 0, 0
 			}
-			break
 		}
+		// Add check for childSurface if needed later
 	}
-
-	// If we couldn't get dimensions from the registry, try to get them from the compositor
-	if surface != nil {
-		// Many Wayland compositors provide a configure event with dimensions
-		// This would be handled in the surface's configure callback
-		// For now, we'll log that we're using minimum dimensions
-		Error("Could not determine surface dimensions, using minimum values: %dx%d", width, height)
-	}
-
-	return
+	Warn("Could not find output associated with surface %d to get dimensions", surface.Id())
+	return 0, 0 // Return 0, 0 if no dimensions found
 }
 
 // initWayland initializes the Wayland connection and resources
 func (l *WaylandLocker) initWayland() error {
-	// Connect to Wayland display
-	conn, err := wlclient.DisplayConnect(nil)
+	var err error
+	l.display, err = wlclient.DisplayConnect(nil)
 	if err != nil {
-		return fmt.Errorf("failed to connect to Wayland display: %w", err)
+		return fmt.Errorf("failed to connect to Wayland display: %v", err)
 	}
-	l.display = conn
+	Info("Connected to Wayland display")
 
-	// Get registry and set up registry handler
-	registry, err := wlclient.DisplayGetRegistry(conn)
+	registry, err := l.display.GetRegistry() // Get registry and error
 	if err != nil {
-		return fmt.Errorf("failed to get registry: %w", err)
+		if l.display != nil && l.display.Context() != nil {
+			l.display.Context().Close() // Use Context().Close()
+		}
+		return fmt.Errorf("failed to get Wayland registry: %v", err)
 	}
-
-	// Use a separate registry handler
-	regHandler := &RegistryHandler{
-		registry:         registry,
+	l.registry = registry // Assign registry
+	l.registryHandler = &RegistryHandler{
+		registry:         l.registry,
 		outputs:          make(map[uint32]*wl.Output),
 		outputGeometries: make(map[*wl.Output]outputInfo),
-		locker:           l, // Ensure the locker reference is set for keyboard handling
+		locker:           l,
 	}
-	l.registryHandler = regHandler
+	// Add specific handlers
+	l.registry.AddGlobalHandler(l.registryHandler)
+	l.registry.AddGlobalRemoveHandler(l.registryHandler)
 
-	// Add the registry handler
-	wlclient.RegistryAddListener(registry, regHandler)
-
-	// Process registry events
-	err = wlclient.DisplayRoundtrip(conn)
-	if err != nil {
-		return fmt.Errorf("failed to process registry events: %w", err)
+	// First roundtrip to get initial globals (compositor, shm, seat, lock_manager, outputs)
+	if err := wlclient.DisplayRoundtrip(l.display); err != nil {
+		if l.display != nil && l.display.Context() != nil {
+			l.display.Context().Close() // Use Context().Close()
+		}
+		return fmt.Errorf("first display roundtrip failed: %v", err)
 	}
-
-	// Copy registry handler values to locker
-	l.compositor = regHandler.compositor
-	l.lockManager = regHandler.lockManager
-	l.shm = regHandler.shm
-	l.seat = regHandler.seat
-	for id, output := range regHandler.outputs {
-		l.outputs[id] = output
-	}
+	Info("First roundtrip complete")
 
 	// Check required interfaces
-	if l.compositor == nil {
-		return fmt.Errorf("Wayland compositor interface not found - is WAYLAND_DISPLAY set correctly?")
+	if l.registryHandler.compositor == nil {
+		if l.display != nil && l.display.Context() != nil {
+			l.display.Context().Close() // Use Context().Close()
+		}
+		return fmt.Errorf("wl_compositor not available")
 	}
-	
-	if l.shm == nil {
-		return fmt.Errorf("Wayland shared memory interface not found")
+	if l.registryHandler.subcompositor == nil { // Check for subcompositor
+		if l.display != nil && l.display.Context() != nil {
+			l.display.Context().Close() // Use Context().Close()
+		}
+		return fmt.Errorf("wl_subcompositor not available")
 	}
-	
-	if l.lockManager == nil {
-		return fmt.Errorf("ext_session_lock_v1 protocol not supported by this Wayland compositor.\n" +
-			"Your compositor does not implement the standard Wayland locking protocol.\n" +
-			"Please check if your compositor supports the ext_session_lock_v1 protocol or use an X11 session.")
+	if l.registryHandler.shm == nil {
+		if l.display != nil && l.display.Context() != nil {
+			l.display.Context().Close() // Use Context().Close()
+		}
+		return fmt.Errorf("wl_shm not available")
+	}
+	if l.registryHandler.seat == nil {
+		if l.display != nil && l.display.Context() != nil {
+			l.display.Context().Close() // Use Context().Close()
+		}
+		return fmt.Errorf("wl_seat not available")
+	}
+	if l.registryHandler.lockManager == nil {
+		if l.display != nil && l.display.Context() != nil {
+			l.display.Context().Close() // Use Context().Close()
+		}
+		return fmt.Errorf("ext_session_lock_manager_v1 not available")
+	}
+	if len(l.registryHandler.outputs) == 0 {
+		if l.display != nil && l.display.Context() != nil {
+			l.display.Context().Close() // Use Context().Close()
+		}
+		return fmt.Errorf("no wl_output found")
+	}
+	Info("Required Wayland interfaces found: compositor, subcompositor, shm, seat, lock_manager, output(s)")
+
+	// Assign globals to locker struct
+	l.compositor = l.registryHandler.compositor
+	l.subcompositor = l.registryHandler.subcompositor // Assign subcompositor
+	l.shm = l.registryHandler.shm
+	l.seat = l.registryHandler.seat
+	l.lockManager = l.registryHandler.lockManager
+	l.outputs = l.registryHandler.outputs // Copy the map
+
+	// Setup seat listener for capabilities (keyboard, pointer)
+	l.seat.AddCapabilitiesHandler(l)
+
+	// Second roundtrip to get seat capabilities and output geometries/modes
+	if err := wlclient.DisplayRoundtrip(l.display); err != nil {
+		if l.display != nil && l.display.Context() != nil {
+			l.display.Context().Close() // Use Context().Close()
+		}
+		return fmt.Errorf("second display roundtrip failed: %v", err)
+	}
+	Info("Second roundtrip complete, seat capabilities and output info received")
+
+	// Check if keyboard was acquired
+	if l.keyboard == nil {
+		Warn("Failed to acquire keyboard input")
+		// This might not be fatal depending on requirements, but likely needed.
+	} else {
+		Info("Keyboard input acquired")
 	}
 
-	// Create session lock
-	lock, err := l.lockManager.Lock()
+	// Create the session lock
+	lock, err := l.lockManager.Lock() // Handle two return values
 	if err != nil {
-		return fmt.Errorf("failed to create session lock: %w", err)
+		if l.display != nil && l.display.Context() != nil {
+			l.display.Context().Close()
+		}
+		return fmt.Errorf("failed to create session lock: %v", err)
 	}
-	l.lock = lock
-
-	// Add lock listener
-	ext.SessionLockAddListener(lock, l)
-
-	// Process lock creation
-	err = wlclient.DisplayRoundtrip(conn)
-	if err != nil {
-		return fmt.Errorf("failed to process lock creation: %w", err)
-	}
+	l.lock = lock // Assign lock if no error
+	l.lock.AddLockedHandler(l)
+	l.lock.AddFinishedHandler(l)
+	Info("Session lock created")
 
 	// Create surfaces for each output
 	for _, output := range l.outputs {
-		// Create surface
-		s, err := l.compositor.CreateSurface()
+		parentSurface, err := l.compositor.CreateSurface() // Handle two return values
 		if err != nil {
-			return fmt.Errorf("failed to create surface: %w", err)
+			Error("Failed to create parent surface for output %d: %v", output.Id(), err)
+			continue // Skip this output if surface creation fails
+		}
+		childSurface, err := l.compositor.CreateSurface() // Handle two return values
+		if err != nil {
+			Error("Failed to create child surface for output %d: %v", output.Id(), err)
+			parentSurface.Destroy() // Clean up parent surface
+			continue
 		}
 
-		// Create lock surface
-		lockSurface, err := l.lock.GetLockSurface(s, output)
+		subsurface, err := l.subcompositor.GetSubsurface(childSurface, parentSurface) // Handle two return values
 		if err != nil {
-			return fmt.Errorf("failed to get lock surface: %w", err)
+			Error("Failed to get subsurface for output %d: %v", output.Id(), err)
+			childSurface.Destroy()  // Clean up child surface
+			parentSurface.Destroy() // Clean up parent surface
+			continue
+		}
+		subsurface.SetSync() // Synchronize parent and child commits
+
+		lockSurface, err := l.lock.GetLockSurface(parentSurface, output) // Handle two return values
+		if err != nil {
+			Error("Failed to get lock surface for output %d: %v", output.Id(), err)
+			subsurface.Destroy()    // Clean up subsurface
+			childSurface.Destroy()  // Clean up child surface
+			parentSurface.Destroy() // Clean up parent surface
+			continue
 		}
 
-		// Add listener
-		ext.SessionLockSurfaceAddListener(lockSurface, &surfaceHandler{
-			client:      l,
-			surface:     s,
-			lockSurface: lockSurface,
-		})
+		handler := &surfaceHandler{
+			client:        l,
+			parentSurface: parentSurface,
+			childSurface:  childSurface,
+			subsurface:    subsurface,
+			lockSurface:   lockSurface,
+		}
+		lockSurface.AddConfigureHandler(handler) // Use AddConfigureHandler based on implemented handler name
 
+		l.mu.Lock()
 		l.surfaces[output] = struct {
-			wlSurface   *wl.Surface
-			lockSurface *ext.SessionLockSurface
+			parentSurface *wl.Surface
+			childSurface  *wl.Surface
+			subsurface    *wl.Subsurface
+			lockSurface   *ext.SessionLockSurface
 		}{
-			wlSurface:   s,
-			lockSurface: lockSurface,
+			parentSurface: parentSurface,
+			childSurface:  childSurface,
+			subsurface:    subsurface,
+			lockSurface:   lockSurface,
 		}
+		l.mu.Unlock()
+		Info("Created parent, child, subsurface, and lock surface for output %d", output.Id())
 	}
 
-	// Process surface creation
-	err = wlclient.DisplayRoundtrip(conn)
-	if err != nil {
-		return fmt.Errorf("failed to process surface creation: %w", err)
-	}
-
-	// Set up keyboard handlers
-	if l.seat != nil {
-		keyboard, err := l.seat.GetKeyboard()
-		if err == nil && keyboard != nil {
-			l.keyboard = keyboard
-			wlclient.KeyboardAddListener(keyboard, l)
+	// Final roundtrip to ensure all surfaces are created and handlers attached
+	if err := wlclient.DisplayRoundtrip(l.display); err != nil {
+		if l.display != nil && l.display.Context() != nil {
+			l.display.Context().Close() // Use Context().Close()
 		}
+		// TODO: Need to destroy created surfaces/lock?
+		return fmt.Errorf("final display roundtrip failed: %v", err)
 	}
+	Info("Wayland initialization complete")
 
-	// Process keyboard setup
-	err = wlclient.DisplayRoundtrip(conn)
-	if err != nil {
-		// Continue anyway - keyboard isn't critical
-		Error("Failed to process keyboard setup: %v", err)
-	}
-
-	// Set up monitor information for media player
+	// Set up monitor information for media player, including child surface IDs
 	var monitors []Monitor
-	for _, info := range regHandler.outputGeometries {
-		monitors = append(monitors, Monitor{
-			X:      info.x,
-			Y:      info.y,
-			Width:  info.width,
-			Height: info.height,
-		})
+	monitorIndex := 0
+	for output, entry := range l.surfaces {
+		if geom, ok := l.registryHandler.outputGeometries[output]; ok {
+			if entry.childSurface == nil {
+				Warn("Child surface is nil for output %d, cannot provide SurfaceID to MediaPlayer", output.Id())
+				monitors = append(monitors, Monitor{
+					X:         geom.x,
+					Y:         geom.y,
+					Width:     geom.width,
+					Height:    geom.height,
+					SurfaceID: 0, // Indicate invalid surface ID
+				})
+			} else {
+				monitors = append(monitors, Monitor{
+					X:         geom.x,
+					Y:         geom.y,
+					Width:     geom.width,
+					Height:    geom.height,
+					SurfaceID: uint32(entry.childSurface.Id()), // Cast wl.ProxyId to uint32
+				})
+				Debug("Prepared monitor %d info: %dx%d @ (%d,%d), SurfaceID: %d",
+					monitorIndex, geom.width, geom.height, geom.x, geom.y, entry.childSurface.Id())
+			}
+		} else {
+			Warn("Could not find geometry for output %d when setting up MediaPlayer", output.Id())
+			// Optionally add a default monitor here if needed, but it might lack a surface ID
+		}
+		monitorIndex++
 	}
-	l.mediaPlayer.SetMonitors(monitors)
+	if l.mediaPlayer != nil {
+		l.mediaPlayer.SetMonitors(monitors)
+	} else {
+		Warn("MediaPlayer is nil during initWayland, cannot set monitors")
+	}
 
-	// Start event loop
+	// Start event dispatch loop in a separate goroutine
 	go func() {
-		for {
+		err := wlclient.DisplayDispatch(l.display)
+		if err != nil {
+			// If dispatch fails (e.g., connection closed), signal done
+			Error("Wayland display dispatch error: %v", err)
+			// Check if done channel is already closed
 			select {
 			case <-l.done:
-				return
+				// Already closed, do nothing
 			default:
-				if err := wlclient.DisplayDispatch(conn); err != nil {
-					Error("Failed to dispatch Wayland events: %v", err)
-					close(l.done)
-					return
-				}
-				time.Sleep(10 * time.Millisecond)
+				close(l.done)
 			}
 		}
 	}()

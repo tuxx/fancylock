@@ -57,13 +57,15 @@ func (mp *MediaPlayer) SetMonitors(monitors []Monitor) {
 	mp.monitors = monitors
 	Info("Media player configured with %d monitors", len(monitors))
 
-	// If no monitors specified, add a default one
+	// If no monitors specified, add a default one (mainly for non-Wayland)
 	if len(mp.monitors) == 0 {
+		Warn("No monitors passed to SetMonitors. MPV might not display correctly on Wayland.")
 		mp.monitors = append(mp.monitors, Monitor{
-			X:      0,
-			Y:      0,
-			Width:  1920,
-			Height: 1080,
+			X:         0,
+			Y:         0,
+			Width:     1920,
+			Height:    1080,
+			SurfaceID: 0, // No valid surface ID for default
 		})
 	}
 }
@@ -102,6 +104,7 @@ func (mp *MediaPlayer) Start() error {
 
 // startPlaylistOnMonitor starts an mpv instance with a shuffled playlist on a specific monitor
 func (mp *MediaPlayer) startPlaylistOnMonitor(monitor Monitor, monitorIdx int) error {
+
 	// Create a temporary playlist file
 	playlistFile, err := os.CreateTemp("", fmt.Sprintf("fancylock-playlist-%d-*.txt", monitorIdx))
 	if err != nil {
@@ -179,12 +182,11 @@ func (mp *MediaPlayer) startPlaylistOnMonitor(monitor Monitor, monitorIdx int) e
 	geometry := fmt.Sprintf("%dx%d+%d+%d", monitor.Width, monitor.Height, monitor.X, monitor.Y)
 
 	// Create mpv command with playlist
-	// Add a new option to get mpv to report the current file
-	// This will help us track what's playing on each monitor
 	ipcSocketPath := fmt.Sprintf("/tmp/fancylock-mpv-socket-%d", monitorIdx)
 	os.Remove(ipcSocketPath) // Remove any existing socket
 
-	cmd := exec.Command("mpv",
+	// Restore original mpv arguments (before --wid was added)
+	mpvArgs := []string{
 		"--no-input-default-bindings", // Disable default key bindings
 		"--really-quiet",              // No console output
 		"--no-stop-screensaver",       // Don't interfere with screensaver
@@ -195,17 +197,19 @@ func (mp *MediaPlayer) startPlaylistOnMonitor(monitor Monitor, monitorIdx int) e
 		"--no-border",                 // No window decorations
 		"--ontop",                     // Always on top
 		"--fullscreen=yes",            // Fullscreen mode
-		"--fs-screen="+strconv.Itoa(monitorIdx), // Use specific screen
-		"--no-keepaspect",                       // Don't preserve aspect ratio
-		"--no-keepaspect-window",                // Allow any window aspect ratio
-		"--panscan=1.0",                         // Scale to fill screen
-		"--hwdec=auto",                          // Hardware acceleration
-		"--geometry="+geometry,                  // Position on correct monitor
-		"--autofit="+fmt.Sprintf("%dx%d", monitor.Width, monitor.Height), // Fit to monitor size
-		"--force-window=yes",                // Always create a window
-		"--playlist="+playlistFile.Name(),   // Use the playlist file
-		"--input-ipc-server="+ipcSocketPath, // IPC socket for controlling mpv
-	)
+		"--fs-screen=" + strconv.Itoa(monitorIdx), // Use specific screen
+		"--keepaspect=no",                         // Don't preserve aspect ratio (use =no)
+		"--keepaspect-window=no",                  // Allow any window aspect ratio (use =no)
+		"--panscan=1.0",                           // Scale to fill screen
+		"--hwdec=auto",                            // Hardware acceleration
+		"--geometry=" + geometry,                  // Position on correct monitor
+		"--autofit=" + fmt.Sprintf("%dx%d", monitor.Width, monitor.Height), // Fit to monitor size
+		"--force-window=yes",                  // Always create a window
+		"--playlist=" + playlistFile.Name(),   // Use the playlist file
+		"--input-ipc-server=" + ipcSocketPath, // IPC socket for controlling mpv
+	}
+
+	cmd := exec.Command("mpv", mpvArgs...)
 
 	// Set process group for easier termination
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -225,7 +229,7 @@ func (mp *MediaPlayer) startPlaylistOnMonitor(monitor Monitor, monitorIdx int) e
 	mp.currentlyPlaying[monitorIdx] = ""
 	mp.mutex.Unlock()
 
-	Info("Started playlist playback on monitor %d with %d files", monitorIdx, len(shuffledMedia))
+	Info("Started MPV (PID: %d) on monitor %d with playlist %s", cmd.Process.Pid, monitorIdx, playlistFile.Name())
 
 	// Start a goroutine to monitor what's playing and clean up when done
 	go func() {
@@ -257,7 +261,7 @@ func (mp *MediaPlayer) startPlaylistOnMonitor(monitor Monitor, monitorIdx int) e
 		// Wait for the process to complete
 		err := cmd.Wait()
 		if err != nil && !strings.Contains(err.Error(), "killed") {
-			Error("Media player on monitor %d exited with error: %v", monitorIdx, err)
+			Error("Media player on monitor %d (PID: %d) exited with error: %v", monitorIdx, cmd.Process.Pid, err)
 		}
 
 		// Stop the file checking goroutine
@@ -274,7 +278,7 @@ func (mp *MediaPlayer) startPlaylistOnMonitor(monitor Monitor, monitorIdx int) e
 		delete(mp.currentlyPlaying, monitorIdx)
 		mp.mutex.Unlock()
 
-		Info("Cleaned up playlist file for monitor %d", monitorIdx)
+		Info("Cleaned up playlist file and socket for monitor %d (PID: %d)", monitorIdx, cmd.Process.Pid)
 	}()
 
 	return nil
